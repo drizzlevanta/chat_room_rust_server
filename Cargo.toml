@@ -1,0 +1,3 @@
+[workspace]
+resolver = "3"
+members = [ "apps/main_server","libs/chat_room", "libs/server"]
