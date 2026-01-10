@@ -1,16 +1,15 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
 mod m20251014_151108_create_room_table;
 mod m20251017_202528_create_user_table;
+mod m20251020_150040_create_message_table;
+
+
+pub use sea_orm_migration::prelude::*;
+
+pub struct Migrator;
+
+#[async_trait::async_trait]
+impl MigratorTrait for Migrator {
+    fn migrations() -> Vec<Box<dyn MigrationTrait>> {
+        vec![Box::new(m20251014_151108_create_room_table::Migration), Box::new(m20251017_202528_create_user_table::Migration), Box::new(m20251020_150040_create_message_table::Migration)]
+    }
+}

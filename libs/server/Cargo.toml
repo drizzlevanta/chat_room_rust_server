@@ -11,3 +11,7 @@ axum = "0.8.1"
 axum-macros = "0.4.2"
 tokio = {version="1.42.0", features = ["full"]}
 uuid = {version = "1.17.0", features = ["v4"]}
+sea-orm = { version = "2.0.0-rc", features = ["sqlx-sqlite", "runtime-tokio-native-tls", "macros"] }
+migration = { path = "../migration" }
+seeder = { path = "../seeder" }
+dotenvy = "0.15.7"

@@ -1,4 +1,10 @@
-use sea_orm_migration::{prelude::*, schema::*, sea_orm::{EnumIter, Iterable}};
+use sea_orm_migration::{
+    prelude::*,
+    schema::*,
+    sea_orm::{EnumIter, Iterable},
+};
+
+use crate::m20251014_151108_create_room_table::Room;
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;
@@ -6,38 +12,49 @@ pub struct Migration;
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-
-        manager.create_table(
-            Table::create()
-                .table(User::Table)
-                .if_not_exists()
-                .col(pk_auto(User::Id))
-                .col(string(User::Name))
-                .col(enumeration_null(User::Status, "status", Status::iter()))
-                .col(string(User::Room)) //TODO foreign key to Room table
-                .to_owned()
-        )
-        .await
-
-
+        manager
+            .create_table(
+                Table::create()
+                    .table(User::Table)
+                    .if_not_exists()
+                    .col(pk_auto(User::Id))
+                    .col(string(User::Name))
+                    .col(enumeration_null(User::Status, "status", Status::iter()))
+                    .col(integer(User::Room).null()) // nullable foreign key to Room::Id
+                    .foreign_key(
+                        ForeignKey::create()
+                            .name("fk_user_room")
+                            .from(User::Table, User::Room)
+                            .to(Room::Table, Room::Id)
+                            .on_delete(ForeignKeyAction::SetNull),
+                    )
+                    .col(uuid(User::PublicId))
+                    .col(timestamp(User::CreatedAt))
+                    .col(timestamp(User::UpdatedAt))
+                    .col(timestamp(User::LastSeenAt).null())
+                    .to_owned(),
+            )
+            .await
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         manager
-        .drop_table(Table::drop().table(User::Table).to_owned())
-        .await
-
-        //TODO drop the enum type
+            .drop_table(Table::drop().table(User::Table).to_owned())
+            .await
     }
 }
 
 #[derive(DeriveIden)]
-enum User {
+pub enum User {
     Table,
-    Id,
+    Id, // Internal Id
     Name,
     Status,
     Room,
+    PublicId, // Public Id exposed from API
+    CreatedAt,
+    UpdatedAt,
+    LastSeenAt,
 }
 
 #[derive(Iden, EnumIter)]
@@ -50,3 +67,4 @@ pub enum Status {
     Away,
 }
 
+//TODO redo enum
