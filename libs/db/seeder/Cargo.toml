@@ -1,0 +1,19 @@
+[package]
+name = "seeder"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "seeder"
+path = "src/lib.rs"
+
+[dependencies]
+async-std = { version = "1", features = ["attributes", "tokio1"] }
+uuid = {version = "1.17.0", features = ["v4"]}
+entity = { path = "../entity" }
+migration = { path = "../migration" }
+dotenvy = "0.15.7"
+
+[dependencies.sea-orm]
+version = "2.0.0-rc" # sea-orm version

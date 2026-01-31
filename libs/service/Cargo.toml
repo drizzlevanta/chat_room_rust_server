@@ -1,0 +1,13 @@
+[package]
+name = "service"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+domain = { path = "../domain" }
+entity = { path = "../db/entity" }
+thiserror = "2.0.12"
+uuid = {version = "1.17.0", features = ["v4"]}
+
+[dependencies.sea-orm]
+version = "2.0.0-rc" # sea-orm version
