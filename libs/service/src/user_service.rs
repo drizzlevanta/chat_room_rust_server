@@ -1,4 +1,7 @@
-use domain::user::{ParseUserStatusError, Status, User as DomainUser};
+use domain::{
+    room::Room,
+    user::{ParseUserStatusError, Status, User as DomainUser},
+};
 use entity::room::Entity as RoomEntity;
 use entity::user::Entity as UserEntity;
 use sea_orm::{
@@ -7,7 +10,7 @@ use sea_orm::{
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::mappers::user_mapper;
+use crate::mappers::user_mapper::{self, RoomParam};
 
 pub struct UserService {
     db: DatabaseConnection, // In SeaORM, DatabaseConnection is internally an arc to a connection pool, therefore cheap to clone
@@ -51,7 +54,7 @@ impl UserService {
             .map_err(|_| UserServiceError::UserNotAdded(name.clone()))?;
 
         // Convert to domain user
-        let user = user_mapper::entity_to_domain(user, room_entity)?;
+        let user = user_mapper::entity_to_domain(user, room_entity.map(RoomParam::Entity))?;
         Ok(user)
     }
 
@@ -67,7 +70,7 @@ impl UserService {
             .ok_or(UserServiceError::UserNotFound(user_id))?;
 
         // Convert to domain user
-        let user = user_mapper::entity_to_domain(user_entity, room_entity)?;
+        let user = user_mapper::entity_to_domain(user_entity, room_entity.map(RoomParam::Entity))?;
         Ok(user)
     }
 
@@ -83,7 +86,9 @@ impl UserService {
 
         let domain_users = users
             .into_iter()
-            .filter_map(|user_entity| user_mapper::entity_to_domain(user_entity, None).ok())
+            .filter_map(|user_entity| {
+                user_mapper::entity_to_domain(user_entity, Some(RoomParam::PublicId(room_id))).ok()
+            })
             .collect::<Vec<DomainUser>>();
 
         Ok(domain_users)
@@ -104,15 +109,12 @@ impl UserService {
 
         // Update the user's status
         let mut user_active_model: entity::user::ActiveModel = user_entity.into();
-        user_active_model.status = ActiveValue::Set(Some(new_status.to_string())); //TODO map status properly
+        user_active_model.status = ActiveValue::Set(Some(new_status.to_string()));
 
         user_active_model
             .update(&self.db)
             .await
             .map_err(|e| UserServiceError::UserStatusUpdateFailed(e.to_string()))?;
-
-        //TODO logging
-
         Ok(())
     }
 
@@ -135,7 +137,29 @@ impl UserService {
         Ok(user_id)
     }
 
-    //  TODO get list of users by status
+    /// Get list of users by status
+    pub async fn get_users_by_status(
+        &self,
+        status: Status,
+    ) -> Result<Vec<DomainUser>, UserServiceError> {
+        // Get status string
+        let status = status.to_string();
+
+        let users_and_rooms = UserEntity::find()
+            .filter(entity::user::Column::Status.eq(status))
+            .find_also_related(RoomEntity)
+            .all(&self.db)
+            .await?;
+
+        let domain_users = users_and_rooms
+            .into_iter()
+            .filter_map(|(user_entity, room_entity)| {
+                user_mapper::entity_to_domain(user_entity, room_entity.map(RoomParam::Entity)).ok()
+            })
+            .collect::<Vec<DomainUser>>();
+
+        Ok(domain_users)
+    }
 }
 
 #[derive(Error, Debug)]
