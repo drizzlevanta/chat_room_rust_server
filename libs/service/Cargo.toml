@@ -8,6 +8,7 @@ domain = { path = "../domain" }
 entity = { path = "../db/entity" }
 thiserror = "2.0.12"
 uuid = {version = "1.17.0", features = ["v4"]}
+chrono = "0.4.41"
 
 [dependencies.sea-orm]
 version = "2.0.0-rc" # sea-orm version

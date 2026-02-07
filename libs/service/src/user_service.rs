@@ -1,7 +1,4 @@
-use domain::{
-    room::Room,
-    user::{ParseUserStatusError, Status, User as DomainUser},
-};
+use domain::user::{ParseUserStatusError, Status, User as DomainUser};
 use entity::room::Entity as RoomEntity;
 use entity::user::Entity as UserEntity;
 use sea_orm::{
@@ -10,7 +7,7 @@ use sea_orm::{
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::mappers::user_mapper::{self, RoomParam};
+use crate::mappers::{TryEntityToDomain, user_mapper::RoomParam};
 
 pub struct UserService {
     db: DatabaseConnection, // In SeaORM, DatabaseConnection is internally an arc to a connection pool, therefore cheap to clone
@@ -54,7 +51,7 @@ impl UserService {
             .map_err(|_| UserServiceError::UserNotAdded(name.clone()))?;
 
         // Convert to domain user
-        let user = user_mapper::entity_to_domain(user, room_entity.map(RoomParam::Entity))?;
+        let user = user.try_entity_to_domain(room_entity.map(RoomParam::Entity))?;
         Ok(user)
     }
 
@@ -70,7 +67,7 @@ impl UserService {
             .ok_or(UserServiceError::UserNotFound(user_id))?;
 
         // Convert to domain user
-        let user = user_mapper::entity_to_domain(user_entity, room_entity.map(RoomParam::Entity))?;
+        let user = user_entity.try_entity_to_domain(room_entity.map(RoomParam::Entity))?;
         Ok(user)
     }
 
@@ -87,7 +84,9 @@ impl UserService {
         let domain_users = users
             .into_iter()
             .filter_map(|user_entity| {
-                user_mapper::entity_to_domain(user_entity, Some(RoomParam::PublicId(room_id))).ok()
+                user_entity
+                    .try_entity_to_domain(Some(RoomParam::PublicId(room_id)))
+                    .ok()
             })
             .collect::<Vec<DomainUser>>();
 
@@ -132,8 +131,6 @@ impl UserService {
             return Err(UserServiceError::UserNotFound(user_id));
         }
 
-        //TODO logging
-
         Ok(user_id)
     }
 
@@ -154,7 +151,9 @@ impl UserService {
         let domain_users = users_and_rooms
             .into_iter()
             .filter_map(|(user_entity, room_entity)| {
-                user_mapper::entity_to_domain(user_entity, room_entity.map(RoomParam::Entity)).ok()
+                user_entity
+                    .try_entity_to_domain(room_entity.map(RoomParam::Entity))
+                    .ok()
             })
             .collect::<Vec<DomainUser>>();
 

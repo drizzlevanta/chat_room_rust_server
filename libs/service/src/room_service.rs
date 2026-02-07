@@ -6,7 +6,7 @@ use sea_orm::{
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::mappers::room_mapper;
+use crate::mappers::EntityToDomain;
 
 pub struct RoomService {
     db: DatabaseConnection,
@@ -39,7 +39,7 @@ impl RoomService {
         };
 
         let room = room.insert(&self.db).await?;
-        Ok(room_mapper::entity_to_domain(room))
+        Ok(room.entity_to_domain(()))
     }
 
     pub async fn get_room_by_id(&self, room_id: Uuid) -> Result<DomainRoom, RoomServiceError> {
@@ -49,7 +49,7 @@ impl RoomService {
             .await?
             .ok_or(RoomServiceError::RoomNotFound(room_id))?;
 
-        Ok(room_mapper::entity_to_domain(room))
+        Ok(room.entity_to_domain(()))
     }
 
     pub async fn get_all_rooms(&self) -> Result<Vec<DomainRoom>, RoomServiceError> {
@@ -57,7 +57,7 @@ impl RoomService {
 
         let domain_rooms = rooms
             .into_iter()
-            .map(room_mapper::entity_to_domain)
+            .map(|room| room.entity_to_domain(()))
             .collect();
 
         Ok(domain_rooms)

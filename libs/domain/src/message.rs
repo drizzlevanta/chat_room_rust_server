@@ -9,15 +9,3 @@ pub struct Message {
     pub sender: Uuid, // Public ID of the user
     pub room: Uuid,   // Public ID of the room
 }
-
-impl Message {
-    pub fn new(content: String, created_at: DateTime<Utc>, sender: Uuid, room: Uuid) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            created_at,
-            content,
-            sender,
-            room,
-        }
-    }
-}

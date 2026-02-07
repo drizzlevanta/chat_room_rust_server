@@ -1,12 +1,16 @@
 /// Mapper functions to convert between domain and entity models for Room.
+use crate::mappers::EntityToDomain;
 use domain::room::Room as DomainRoom;
 use entity::room::Model as EntityRoom;
 
-pub fn entity_to_domain(entity: EntityRoom) -> DomainRoom {
-    DomainRoom {
-        id: entity.public_id,
-        name: entity.name,
-        capacity: entity.capacity,
-        description: entity.description,
+/// Implementation of EntityToDomain trait for Room entity
+impl EntityToDomain<DomainRoom> for EntityRoom {
+    fn entity_to_domain(self, _context: ()) -> DomainRoom {
+        DomainRoom {
+            id: self.public_id,
+            name: self.name,
+            capacity: self.capacity,
+            description: self.description,
+        }
     }
 }

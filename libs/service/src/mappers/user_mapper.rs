@@ -1,3 +1,4 @@
+use crate::mappers::TryEntityToDomain;
 use domain::user::{ParseUserStatusError, Status, User as DomainUser};
 use entity::room::Model as Room;
 use entity::user::Model as EntityUser;
@@ -18,18 +19,19 @@ impl RoomParam {
     }
 }
 
-/// Mapper functions to convert between domain and entity models for User.
-pub fn entity_to_domain(
-    entity: EntityUser,
-    room: Option<RoomParam>,
-) -> Result<DomainUser, ParseUserStatusError> {
-    let status = entity.status.map(|s| s.parse::<Status>()).transpose()?;
+/// Implementation of TryEntityToDomain trait for User entity
+impl TryEntityToDomain<DomainUser, Option<RoomParam>> for EntityUser {
+    type Error = ParseUserStatusError;
 
-    Ok(DomainUser {
-        id: entity.public_id,
-        name: entity.name,
-        status: status,
-        room: room.map(|r| r.into_public_id()),
-        last_seen: entity.last_seen_at,
-    })
+    fn try_entity_to_domain(self, room: Option<RoomParam>) -> Result<DomainUser, Self::Error> {
+        let status = self.status.map(|s| s.parse::<Status>()).transpose()?;
+
+        Ok(DomainUser {
+            id: self.public_id,
+            name: self.name,
+            status,
+            room: room.map(|r| r.into_public_id()),
+            last_seen: self.last_seen_at,
+        })
+    }
 }
