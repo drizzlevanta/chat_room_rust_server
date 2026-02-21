@@ -1,14 +1,14 @@
 use chrono::{DateTime, Utc};
-use domain::{constants::MAX_MESSAGE_LENGTH, message::Message};
+use domain::{constants::MAX_MESSAGE_LENGTH, message::Message, pagination::CursorPage};
 use entity::message::Column as MessageColumn;
 use entity::message::Entity as MessageEntity;
 use entity::room::Column as RoomColumn;
-use entity::room::Entity as RoomEntity;
 use entity::user::Column as UserColumn;
 use entity::user::Entity as UserEntity;
+use sea_orm::QueryOrder;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait,
-    FromQueryResult, JoinType, QueryFilter, QuerySelect, RelationTrait, prelude::DateTimeUtc,
+    FromQueryResult, JoinType, QueryFilter, QuerySelect, RelationTrait, Select,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -24,12 +24,33 @@ impl MessageService {
         Self { db }
     }
 
-    // TODO need to consider retry logic for the same message being sent multiple times
+    /// Base query that selects message fields with joined user/room public IDs,
+    /// filtered by `room_id`. All message-listing functions build on top of this.
+    fn base_message_query(room_id: Uuid) -> Select<MessageEntity> {
+        MessageEntity::find()
+            .select_only()
+            .column_as(MessageColumn::PublicId, "id")
+            .column(MessageColumn::CreatedAt)
+            .column(MessageColumn::Content)
+            .column_as(UserColumn::PublicId, "sender")
+            .column_as(RoomColumn::PublicId, "room")
+            .join(JoinType::InnerJoin, entity::message::Relation::User.def())
+            .join(JoinType::InnerJoin, entity::message::Relation::Room.def())
+            .filter(RoomColumn::PublicId.eq(room_id))
+    }
+
+    /// Add a message to a room.
+    ///
+    /// `idempotency_key` is a client-generated UUID that prevents duplicate
+    /// messages on retries.  If the same key is sent again within the cache
+    /// TTL (5 minutes), the previously created message is returned instead
+    /// of inserting a new one.
     pub async fn add_message(
         &self,
         content: &str,
         user_id: Uuid,
         room_id: Uuid,
+        idempotency_key: Uuid,
     ) -> Result<Message, MessageServiceError> {
         // Validate message length
         if content.len() > MAX_MESSAGE_LENGTH {
@@ -46,8 +67,8 @@ impl MessageService {
             .filter(RoomColumn::PublicId.eq(room_id))
             .into_tuple::<(i32, i32)>()
             .one(&self.db)
-            .await? // trailing ? to propagate database errors
-            .ok_or(MessageServiceError::UserNotFoundinRoom { user_id, room_id })?; // `ok_or`convert the Option to Result, returning an error if None
+            .await?
+            .ok_or(MessageServiceError::UserNotFoundinRoom { user_id, room_id })?;
 
         // Insert message
         let message = entity::message::ActiveModel {
@@ -65,80 +86,116 @@ impl MessageService {
         Ok(domain_message)
     }
 
-    pub async fn get_messages_in_room(
+    /// Fetch a single message by its public_id (used for idempotent retries).
+    async fn get_message_by_id(
         &self,
+        message_id: Uuid,
         room_id: Uuid,
-    ) -> Result<Vec<Message>, MessageServiceError> {
-        // Find the internal id for the room
-        let internal_room_id = RoomEntity::find()
-            .select_only()
-            .column(RoomColumn::Id)
-            .filter(RoomColumn::PublicId.eq(room_id))
-            .into_tuple::<i32>()
+    ) -> Result<Message, MessageServiceError> {
+        let row = Self::base_message_query(room_id)
+            .filter(MessageColumn::PublicId.eq(message_id))
+            .into_model::<MessageRow>()
             .one(&self.db)
             .await?
-            .ok_or(MessageServiceError::RoomNotFound(room_id))?;
+            .ok_or(MessageServiceError::MessageNotFound(message_id))?;
 
-        //TODO optimize query to not fetch the entire user entity if not needed
-        let message_and_users = MessageEntity::find()
-            .filter(MessageColumn::Room.eq(internal_room_id))
-            .find_also_related(UserEntity)
-            .all(&self.db)
-            .await?;
-        // let message_and_users = MessageEntity::find()
-        //     .filter(MessageColumn::Room.eq(internal_room_id))
-        //     .find_also_related(UserEntity)
-        //     .select_only_related()
-        //     .all(&self.db)
-        //     .await?;
-
-        let domain_messages = message_and_users
-            .into_iter()
-            .filter_map(|(msg, user)| {
-                user.map(|u| {
-                    msg.entity_to_domain(MessageContext {
-                        user_id: u.public_id,
-                        room_id,
-                    })
-                }) // filter_map automatically filters out None values
-            })
-            .collect();
-
-        Ok(domain_messages)
+        Ok(Message::from(row))
     }
 
+    /// Get all messages in a room. Use with caution for rooms with large message histories, as it loads everything into memory.
     pub async fn get_all_messages_in_room(
         &self,
         room_id: Uuid,
     ) -> Result<Vec<Message>, MessageServiceError> {
-        // Select only necessary columns to avoid loading entire entities
-        let message_rows = MessageEntity::find()
-            .select_only()
-            .column_as(MessageColumn::PublicId, "id")
-            .column(MessageColumn::CreatedAt)
-            .column(MessageColumn::Content)
-            .column_as(UserColumn::PublicId, "sender")
-            .column_as(RoomColumn::PublicId, "room")
-            .join(JoinType::InnerJoin, entity::message::Relation::User.def())
-            .join(JoinType::InnerJoin, entity::message::Relation::Room.def())
-            .filter(RoomColumn::PublicId.eq(room_id))
+        let message_rows = Self::base_message_query(room_id)
             .into_model::<MessageRow>()
             .all(&self.db)
             .await?;
 
-        // TODO externalize mapping if needed
-        let domain_messages = message_rows
+        Ok(message_rows.into_iter().map(Message::from).collect())
+    }
+
+    /// Get the latest N messages in a room, ordered from newest to oldest.
+    pub async fn get_latest_n_messages_in_room(
+        &self,
+        room_id: Uuid,
+        n: usize,
+    ) -> Result<Vec<Message>, MessageServiceError> {
+        let message_rows = Self::base_message_query(room_id)
+            .order_by_desc(MessageColumn::CreatedAt)
+            .limit(n as u64)
+            .into_model::<MessageRow>()
+            .all(&self.db)
+            .await?;
+
+        Ok(message_rows.into_iter().map(Message::from).collect())
+    }
+
+    /// Get messages in a room using cursor-based pagination.
+    ///
+    /// Messages are returned in reverse chronological order (newest first).
+    /// The cursor is a UUIDv7 `public_id` — since UUIDv7 is time-ordered,
+    /// sorting by it is equivalent to sorting by creation time, but without
+    /// the duplicate-timestamp ambiguity that `created_at` cursors have.
+    ///
+    /// Pass `None` as `cursor` to start from the most recent messages.
+    /// Use the returned `next_cursor` value to fetch the next page.
+    pub async fn get_messages_in_room(
+        &self,
+        room_id: Uuid,
+        cursor: Option<Uuid>,
+        limit: u64,
+    ) -> Result<CursorPage<Message>, MessageServiceError> {
+        let mut query = Self::base_message_query(room_id).order_by_desc(MessageColumn::PublicId);
+
+        // Fetch messages with IDs less than the cursor for reverse chronological order
+        // If cursor is None, this condition is ignored and we start from the most recent messages
+        if let Some(cursor_id) = cursor {
+            query = query.filter(MessageColumn::PublicId.lt(cursor_id));
+        }
+
+        // Fetch limit + 1 to detect if there's a next page
+        let rows = query
+            .limit(limit + 1)
+            .into_model::<MessageRow>()
+            .all(&self.db)
+            .await?;
+
+        let has_next_page = rows.len() as u64 > limit;
+
+        // Take only the requested number of items for the current page
+        let items: Vec<Message> = rows
             .into_iter()
-            .map(|row| Message {
-                id: row.id,
-                created_at: row.created_at,
-                content: row.content,
-                sender: row.sender,
-                room: row.room,
-            })
+            .take(limit as usize)
+            .map(Message::from)
             .collect();
 
-        Ok(domain_messages)
+        // Use the last item's ID as the next cursor if there is a next page
+        let next_cursor = if has_next_page {
+            items.last().map(|m| m.id)
+        } else {
+            None
+        };
+
+        Ok(CursorPage {
+            items,
+            next_cursor,
+            has_next_page,
+        })
+    }
+
+    /// Delete a message by its public id
+    pub async fn delete_message(&self, message_id: Uuid) -> Result<(), MessageServiceError> {
+        let res = MessageEntity::delete_many()
+            .filter(MessageColumn::PublicId.eq(message_id))
+            .exec(&self.db)
+            .await?;
+
+        if res.rows_affected == 0 {
+            return Err(MessageServiceError::MessageNotFound(message_id));
+        }
+
+        Ok(())
     }
 }
 
@@ -153,6 +210,9 @@ pub enum MessageServiceError {
     #[error("Room with id {0} not found")]
     RoomNotFound(Uuid),
 
+    #[error("Message with id {0} not found")]
+    MessageNotFound(Uuid),
+
     #[error("Database error in MessageService: {0}")]
     DatabaseError(#[from] sea_orm::DbErr),
 }
@@ -165,4 +225,17 @@ struct MessageRow {
     content: String,
     sender: Uuid,
     room: Uuid,
+}
+
+// Implement conversion from MessageRow to domain Message
+impl From<MessageRow> for Message {
+    fn from(row: MessageRow) -> Self {
+        Message {
+            id: row.id,
+            created_at: row.created_at,
+            content: row.content,
+            sender: row.sender,
+            room: row.room,
+        }
+    }
 }

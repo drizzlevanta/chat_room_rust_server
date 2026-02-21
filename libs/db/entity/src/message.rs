@@ -2,6 +2,7 @@
 
 use chrono::Utc;
 use sea_orm::{ActiveValue::Set, entity::prelude::*};
+use uuid::Uuid;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
 #[sea_orm(table_name = "message")]
@@ -54,10 +55,11 @@ impl ActiveModelBehavior for ActiveModel {
     where
         C: ConnectionTrait,
     {
-        // Always set created_at on insert
+        // On insert, set created_at and generate a UUIDv7 public_id
         if insert {
             let current_time = Utc::now();
             self.created_at = Set(current_time);
+            self.public_id = Set(Uuid::now_v7());
         }
         Ok(self)
     }

@@ -106,6 +106,18 @@ dependencies = [
 [[package]]
 name = "api-graphql"
 version = "0.1.0"
+dependencies = [
+ "async-graphql",
+ "async-graphql-axum",
+ "axum",
+ "chrono",
+ "domain",
+ "sea-orm",
+ "service",
+ "thiserror 2.0.17",
+ "tokio",
+ "uuid",
+]
 
 [[package]]
 name = "api-rest"
@@ -199,6 +211,7 @@ dependencies = [
  "async-trait",
  "base64",
  "bytes",
+ "chrono",
  "fast_chemail",
  "fnv",
  "futures-timer",
@@ -917,6 +930,7 @@ dependencies = [
  "async-std",
  "chrono",
  "sea-orm",
+ "uuid",
 ]
 
 [[package]]

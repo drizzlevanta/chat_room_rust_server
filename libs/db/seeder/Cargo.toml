@@ -10,7 +10,7 @@ path = "src/lib.rs"
 
 [dependencies]
 async-std = { version = "1", features = ["attributes", "tokio1"] }
-uuid = {version = "1.17.0", features = ["v4"]}
+uuid = {version = "1.17.0", features = ["v4", "v7"]}
 entity = { path = "../entity" }
 migration = { path = "../migration" }
 dotenvy = "0.15.7"

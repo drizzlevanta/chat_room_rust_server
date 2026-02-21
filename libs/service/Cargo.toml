@@ -7,7 +7,7 @@ edition = "2024"
 domain = { path = "../domain" }
 entity = { path = "../db/entity" }
 thiserror = "2.0.12"
-uuid = {version = "1.17.0", features = ["v4"]}
+uuid = {version = "1.17.0", features = ["v4", "v7"]}
 chrono = "0.4.41"
 
 [dependencies.sea-orm]

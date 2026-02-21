@@ -1,4 +1,3 @@
-pub mod constants;
 pub mod message;
 pub mod pagination;
 pub mod room;

@@ -23,7 +23,7 @@ pub async fn seed_messages(
             content: Set(message_content),
             sender: Set(sender.id),
             room: Set(room.id),
-            public_id: Set(Uuid::new_v4()),
+            public_id: Set(Uuid::now_v7()),
             ..Default::default()
         }
         .insert(txn)
