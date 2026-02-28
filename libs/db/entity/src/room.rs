@@ -50,6 +50,7 @@ impl ActiveModelBehavior for ActiveModel {
         // On insert, also set created_at
         if insert {
             self.created_at = Set(current_time);
+            self.public_id = Set(Uuid::new_v4());
         }
 
         Ok(self)

@@ -1,38 +1,36 @@
 use std::sync::Arc;
 
-use async_graphql::{Context, Object, Result};
+use async_graphql::{Context, Object, SimpleObject, Union};
 use service::ServiceContainer;
 use uuid::Uuid;
 
+use crate::types::error::RoomError;
 use crate::types::room::{CreateRoomInput, Room};
 
 #[derive(Default)]
 pub struct RoomQuery;
 
-// TODO graphql error handling
-
 #[Object]
 impl RoomQuery {
     /// Fetch all rooms.
-    async fn rooms(&self, ctx: &Context<'_>) -> Result<Vec<Room>> {
+    async fn rooms(&self, ctx: &Context<'_>) -> RoomListResult {
         let services = ctx.data_unchecked::<Arc<ServiceContainer>>();
-        let rooms = services
-            .room
-            .get_all_rooms()
-            .await
-            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-        Ok(rooms.into_iter().map(Room::from).collect())
+        match services.room.get_all_rooms().await {
+            Ok(rooms) => {
+                let items = rooms.into_iter().map(Room::from).collect();
+                RoomListResult::Rooms(RoomList { items })
+            }
+            Err(e) => RoomListResult::Error(e.into()),
+        }
     }
 
     /// Fetch a single room by its public ID.
-    async fn room(&self, ctx: &Context<'_>, id: Uuid) -> Result<Room> {
+    async fn room(&self, ctx: &Context<'_>, id: Uuid) -> GetRoomResult {
         let services = ctx.data_unchecked::<Arc<ServiceContainer>>();
-        let room = services
-            .room
-            .get_room_by_id(id)
-            .await
-            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-        Ok(Room::from(room))
+        match services.room.get_room_by_id(id).await {
+            Ok(room) => GetRoomResult::Room(Room::from(room)),
+            Err(e) => GetRoomResult::Error(e.into()),
+        }
     }
 
     // TODO fetch rooms with available capacity (requires joining with users_in_room count)
@@ -45,24 +43,64 @@ pub struct RoomMutation;
 #[Object]
 impl RoomMutation {
     /// Create a new room.
-    async fn create_room(&self, ctx: &Context<'_>, input: CreateRoomInput) -> Result<Room> {
+    async fn create_room(&self, ctx: &Context<'_>, input: CreateRoomInput) -> CreateRoomResult {
         let services = ctx.data_unchecked::<Arc<ServiceContainer>>();
-        let room = services
-            .room
-            .add_room(input.name, input.capacity)
-            .await
-            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-        Ok(Room::from(room))
+        match services.room.add_room(input.name, input.capacity).await {
+            Ok(room) => CreateRoomResult::Room(Room::from(room)),
+            Err(e) => CreateRoomResult::Error(e.into()),
+        }
     }
 
-    /// Delete a room by its public ID. Returns the deleted room's ID.
-    async fn delete_room(&self, ctx: &Context<'_>, id: Uuid) -> Result<Uuid> {
+    /// Delete a room by its public ID.
+    async fn delete_room(&self, ctx: &Context<'_>, id: Uuid) -> DeleteRoomResult {
         let services = ctx.data_unchecked::<Arc<ServiceContainer>>();
-        let deleted_id = services
-            .room
-            .delete_room(id)
-            .await
-            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-        Ok(deleted_id)
+        match services.room.delete_room(id).await {
+            Ok(id) => DeleteRoomResult::Success(DeletedId { id }),
+            Err(e) => DeleteRoomResult::Error(e.into()),
+        }
     }
+}
+
+/// Wrapper so `Vec<Room>` can be a GraphQL union variant.
+#[derive(SimpleObject)]
+pub struct RoomList {
+    pub items: Vec<Room>,
+}
+
+/// Wrapper for returning a deleted entity's ID.
+#[derive(SimpleObject)]
+pub struct DeletedId {
+    pub id: Uuid,
+}
+
+// ---------------------------------------------------------------------------
+// Result unions
+// ---------------------------------------------------------------------------
+
+#[derive(Union)]
+pub enum RoomListResult {
+    Rooms(RoomList),
+    #[graphql(flatten)]
+    Error(RoomError),
+}
+
+#[derive(Union)]
+pub enum GetRoomResult {
+    Room(Room),
+    #[graphql(flatten)]
+    Error(RoomError),
+}
+
+#[derive(Union)]
+pub enum CreateRoomResult {
+    Room(Room),
+    #[graphql(flatten)]
+    Error(RoomError),
+}
+
+#[derive(Union)]
+pub enum DeleteRoomResult {
+    Success(DeletedId),
+    #[graphql(flatten)]
+    Error(RoomError),
 }

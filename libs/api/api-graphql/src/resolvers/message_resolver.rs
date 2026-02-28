@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use async_graphql::{Context, Object, Result, SimpleObject, Union};
+use async_graphql::{Context, Object, SimpleObject, Union};
 use service::ServiceContainer;
-use service::message_service::MessageServiceError;
 use uuid::Uuid;
 
+use crate::types::error::MessageError;
 use crate::types::message::{Message, SendMessageInput};
 use crate::types::pagination::MessagePage;
 
@@ -14,16 +14,14 @@ pub struct MessageQuery;
 #[Object]
 impl MessageQuery {
     /// Fetch all messages in a room (use with caution for large histories).
-    /// TODO break down MessageQueryResult into separate queries for list vs paginated to avoid the union overhead when not needed.
-    async fn messages(&self, ctx: &Context<'_>, room_id: Uuid) -> MessageQueryResult {
+    async fn messages(&self, ctx: &Context<'_>, room_id: Uuid) -> MessageListResult {
         let services = ctx.data_unchecked::<Arc<ServiceContainer>>();
         match services.message.get_all_messages_in_room(room_id).await {
-            // Can't use `?` here because we want to return a GraphQL union with either the messages or an error, not just propagate the error.
             Ok(messages) => {
                 let items = messages.into_iter().map(Message::from).collect();
-                MessageQueryResult::Messages(MessageList { items })
+                MessageListResult::Messages(MessageList { items })
             }
-            Err(e) => MessageQueryResult::Error(MessageError::from(e)),
+            Err(e) => MessageListResult::Error(e.into()),
         }
     }
 
@@ -36,14 +34,16 @@ impl MessageQuery {
         room_id: Uuid,
         cursor: Option<Uuid>,
         #[graphql(default = 20)] limit: u64,
-    ) -> Result<MessagePage> {
+    ) -> MessagePageResult {
         let services = ctx.data_unchecked::<Arc<ServiceContainer>>();
-        let page = services
+        match services
             .message
             .get_messages_in_room(room_id, cursor, limit)
             .await
-            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-        Ok(MessagePage::from(page))
+        {
+            Ok(page) => MessagePageResult::Page(MessagePage::from(page)),
+            Err(e) => MessagePageResult::Error(e.into()),
+        }
     }
 
     /// Fetch the latest N messages in a room (newest first).
@@ -52,14 +52,19 @@ impl MessageQuery {
         ctx: &Context<'_>,
         room_id: Uuid,
         #[graphql(default = 10)] n: usize,
-    ) -> Result<Vec<Message>> {
+    ) -> MessageListResult {
         let services = ctx.data_unchecked::<Arc<ServiceContainer>>();
-        let messages = services
+        match services
             .message
             .get_latest_n_messages_in_room(room_id, n)
             .await
-            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-        Ok(messages.into_iter().map(Message::from).collect())
+        {
+            Ok(messages) => {
+                let items = messages.into_iter().map(Message::from).collect();
+                MessageListResult::Messages(MessageList { items })
+            }
+            Err(e) => MessageListResult::Error(e.into()),
+        }
     }
 }
 
@@ -69,9 +74,9 @@ pub struct MessageMutation;
 #[Object]
 impl MessageMutation {
     /// Send a message to a room. Uses idempotency key to prevent duplicates.
-    async fn send_message(&self, ctx: &Context<'_>, input: SendMessageInput) -> Result<Message> {
+    async fn send_message(&self, ctx: &Context<'_>, input: SendMessageInput) -> SendMessageResult {
         let services = ctx.data_unchecked::<Arc<ServiceContainer>>();
-        let msg = services
+        match services
             .message
             .add_message(
                 &input.content,
@@ -80,59 +85,18 @@ impl MessageMutation {
                 input.idempotency_key,
             )
             .await
-            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-        Ok(Message::from(msg))
+        {
+            Ok(msg) => SendMessageResult::Message(Message::from(msg)),
+            Err(e) => SendMessageResult::Error(e.into()),
+        }
     }
 
     /// Delete a message by its public ID.
-    async fn delete_message(&self, ctx: &Context<'_>, id: Uuid) -> Result<bool> {
+    async fn delete_message(&self, ctx: &Context<'_>, id: Uuid) -> DeleteMessageResult {
         let services = ctx.data_unchecked::<Arc<ServiceContainer>>();
-        services
-            .message
-            .delete_message(id)
-            .await
-            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-        Ok(true)
-    }
-}
-
-/// Message-related errors exposed to the GraphQL client.
-// Conceals database error details from the client for security.
-#[derive(SimpleObject, Debug)]
-pub struct MessageError {
-    pub message: String,
-    pub code: String,
-}
-
-impl From<MessageServiceError> for MessageError {
-    fn from(err: MessageServiceError) -> Self {
-        let msg = err.to_string();
-        match err {
-            MessageServiceError::MessageTooLong => Self {
-                message: msg,
-                code: "MESSAGE_TOO_LONG".to_string(),
-            },
-            MessageServiceError::UserNotFoundinRoom { .. } => Self {
-                message: msg,
-                code: "USER_NOT_IN_ROOM".to_string(),
-            },
-            MessageServiceError::RoomNotFound(_) => Self {
-                message: msg,
-                code: "ROOM_NOT_FOUND".to_string(),
-            },
-            MessageServiceError::MessageNotFound(_) => Self {
-                message: msg,
-                code: "MESSAGE_NOT_FOUND".to_string(),
-            },
-            // Conceal the database error details from the client for security
-            MessageServiceError::DatabaseError(e) => {
-                //TODO log this properly instead of just printing to stderr
-                eprintln!("Database error: {e}");
-                Self {
-                    message: "Internal server error".to_string(),
-                    code: "INTERNAL_ERROR".to_string(),
-                }
-            }
+        match services.message.delete_message(id).await {
+            Ok(()) => DeleteMessageResult::Success(DeleteSuccess { success: true }),
+            Err(e) => DeleteMessageResult::Error(e.into()),
         }
     }
 }
@@ -143,17 +107,42 @@ pub struct MessageList {
     pub items: Vec<Message>,
 }
 
-/// GraphQL union type for message query results.
+/// Wrapper for successful delete operations.
+#[derive(SimpleObject)]
+pub struct DeleteSuccess {
+    pub success: bool,
+}
+
+/// Result union for queries returning a list of messages.
 #[derive(Union)]
-pub enum MessageQueryResult {
-    Messages(MessageList), //TODO check if we can just return Vec<Message> directly without wrapping in MessageList
-    MessagesPaginated(MessagePage),
+pub enum MessageListResult {
+    Messages(MessageList),
+
+    // GraphQL does not allow nested unions, so we flatten the error
+    #[graphql(flatten)]
     Error(MessageError),
 }
 
-/// GraphQL union type for message mutation results.
+/// Result union for paginated message queries.
 #[derive(Union)]
-pub enum MessageMutationResult {
+pub enum MessagePageResult {
+    Page(MessagePage),
+    #[graphql(flatten)]
+    Error(MessageError),
+}
+
+/// Result union for the send-message mutation.
+#[derive(Union)]
+pub enum SendMessageResult {
     Message(Message),
+    #[graphql(flatten)]
+    Error(MessageError),
+}
+
+/// Result union for the delete-message mutation.
+#[derive(Union)]
+pub enum DeleteMessageResult {
+    Success(DeleteSuccess),
+    #[graphql(flatten)]
     Error(MessageError),
 }

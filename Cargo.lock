@@ -124,6 +124,19 @@ name = "api-rest"
 version = "0.1.0"
 
 [[package]]
+name = "api-server"
+version = "0.1.0"
+dependencies = [
+ "api-graphql",
+ "axum",
+ "dotenvy",
+ "migration",
+ "sea-orm",
+ "service",
+ "tokio",
+]
+
+[[package]]
 name = "arrayvec"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1678,7 +1691,7 @@ dependencies = [
 name = "main_server"
 version = "0.1.0"
 dependencies = [
- "server",
+ "api-server",
 ]
 
 [[package]]

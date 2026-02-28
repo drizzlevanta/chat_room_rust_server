@@ -1,4 +1,3 @@
 fn main() {
-    // std::env::set_var("RUST_LOG", "debug");
-    server::start_server();
+    api_server::start_server();
 }

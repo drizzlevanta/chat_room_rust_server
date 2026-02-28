@@ -15,8 +15,10 @@ use uuid::Uuid;
 
 use crate::mappers::{EntityToDomain, message_mapper::MessageContext};
 
+/// Service layer for message-related operations. This is where business logic related to messages is implemented, such as validation,
+/// idempotency handling, and complex queries. The service interacts with the database through SeaORM.
 pub struct MessageService {
-    pub db: DatabaseConnection,
+    db: DatabaseConnection,
 }
 
 impl MessageService {
@@ -52,8 +54,8 @@ impl MessageService {
         room_id: Uuid,
         idempotency_key: Uuid,
     ) -> Result<Message, MessageServiceError> {
-        // Validate message length
-        if content.len() > MAX_MESSAGE_LENGTH {
+        // Validate message length, counting by characters
+        if content.chars().count() > MAX_MESSAGE_LENGTH {
             return Err(MessageServiceError::MessageTooLong);
         }
 
@@ -67,8 +69,8 @@ impl MessageService {
             .filter(RoomColumn::PublicId.eq(room_id))
             .into_tuple::<(i32, i32)>()
             .one(&self.db)
-            .await?
-            .ok_or(MessageServiceError::UserNotFoundinRoom { user_id, room_id })?;
+            .await? // Bubble up DB errors
+            .ok_or(MessageServiceError::UserNotFoundinRoom { user_id, room_id })?; // Return error if no such user in room
 
         // Insert message
         let message = entity::message::ActiveModel {
@@ -199,6 +201,7 @@ impl MessageService {
     }
 }
 
+/// Errors that can occur in MessageService operations.
 #[derive(Error, Debug)]
 pub enum MessageServiceError {
     #[error("Message too long. Maximum length is {MAX_MESSAGE_LENGTH} characters.")]
