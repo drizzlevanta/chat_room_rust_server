@@ -4,6 +4,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 /// Domain representation of a user
+#[derive(Clone)]
 pub struct User {
     pub id: Uuid, // Unique identifier for the user. This is the public id.
     pub name: String,
@@ -45,7 +46,7 @@ impl FromStr for Status {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum ParseUserStatusError {
     #[error("invalid user status: {0}")]
     InvalidStatus(String),

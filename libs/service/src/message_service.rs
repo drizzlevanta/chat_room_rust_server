@@ -13,17 +13,19 @@ use sea_orm::{
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::cache::ChatCache;
 use crate::mappers::{EntityToDomain, message_mapper::MessageContext};
 
 /// Service layer for message-related operations. This is where business logic related to messages is implemented, such as validation,
 /// idempotency handling, and complex queries. The service interacts with the database through SeaORM.
 pub struct MessageService {
     db: DatabaseConnection,
+    cache: ChatCache,
 }
 
 impl MessageService {
-    pub fn new(db: DatabaseConnection) -> Self {
-        Self { db }
+    pub fn new(db: DatabaseConnection, cache: ChatCache) -> Self {
+        Self { db, cache }
     }
 
     /// Base query that selects message fields with joined user/room public IDs,

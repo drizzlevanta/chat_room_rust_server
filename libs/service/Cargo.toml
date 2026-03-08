@@ -9,6 +9,7 @@ entity = { path = "../db/entity" }
 thiserror = "2.0.12"
 uuid = {version = "1.17.0", features = ["v4", "v7"]}
 chrono = "0.4.41"
+moka = { version = "0.12", features = ["future"] }
 
 [dependencies.sea-orm]
 version = "2.0.0-rc" # sea-orm version
