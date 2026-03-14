@@ -7,6 +7,7 @@ use uuid::Uuid;
 ///
 /// # Type Parameters
 /// * `T` - The type of items in the page
+#[derive(Clone, Debug)]
 pub struct CursorPage<T> {
     /// The items in this page
     pub items: Vec<T>,

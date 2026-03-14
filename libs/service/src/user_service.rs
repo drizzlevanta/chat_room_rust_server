@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::cache::ChatCache;
 use chrono::{DateTime, Utc};
 use domain::user::{ParseUserStatusError, Status, User as DomainUser};
 use entity::room::Column as RoomColumn;
@@ -15,7 +16,6 @@ use sea_orm::{
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::cache::ChatCache;
 use crate::mappers::{TryEntityToDomain, user_mapper::RoomParam};
 
 /// Service layer for user-related operations. This is where business logic related to users is implemented, such as validation,
@@ -34,6 +34,23 @@ impl UserService {
     /// If a room id is provided, associates the user with that room.
     /// If the room is not found, user is still created but without a room association.
     pub async fn add_user(
+        &self,
+        name: String,
+        room: Option<Uuid>,
+        idempotency_key: Uuid,
+    ) -> Result<DomainUser, UserServiceError> {
+        // Use idempotency cache to ensure that retries with the same idempotency key return the same result without creating duplicate users.
+        self.cache
+            .idempotency_user
+            .try_get_with(
+                idempotency_key,
+                self.add_user_inner(name, room), // The inner function contains the actual logic to add a user, while the outer function handles idempotency caching.
+            )
+            .await
+            .map_err(|e| Arc::unwrap_or_clone(e))
+    }
+
+    async fn add_user_inner(
         &self,
         name: String,
         room: Option<Uuid>,
@@ -185,8 +202,8 @@ impl UserService {
         }
 
         // Invalidate caches for this user
-        self.cache.users.invalidate(&user_id).await;
         // We don't have the room ID here, so we'll just invalidate the user cache and rely on cache expiration for the users-in-room cache
+        self.cache.users.invalidate(&user_id).await;
 
         Ok(user_id)
     }

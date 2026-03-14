@@ -4,7 +4,8 @@ use async_graphql::{Context, Object, SimpleObject, Union};
 use service::ServiceContainer;
 use uuid::Uuid;
 
-use crate::types::error::UserError;
+use crate::types::error::{MissingIdempotencyKeyError, UserError};
+use crate::types::idempotency::IdempotencyHeader;
 use crate::types::user::{CreateUserInput, UpdateUserStatusInput, User, UserStatus};
 
 #[derive(Default)]
@@ -53,8 +54,22 @@ pub struct UserMutation;
 impl UserMutation {
     /// Create a new user, optionally placing them in a room.
     async fn create_user(&self, ctx: &Context<'_>, input: CreateUserInput) -> CreateUserResult {
+        // Try to get the idempotency key from the HTTP header. If it's missing, return an error variant immediately.
+        let idempotency_key = match ctx.data_unchecked::<IdempotencyHeader>().0 {
+            Some(key) => key,
+            None => {
+                return CreateUserResult::Error(UserError::MissingIdempotencyKey(
+                    MissingIdempotencyKeyError::new(),
+                ));
+            }
+        };
+
         let services = ctx.data_unchecked::<Arc<ServiceContainer>>();
-        match services.user.add_user(input.name, input.room).await {
+        match services
+            .user
+            .add_user(input.name, input.room, idempotency_key)
+            .await
+        {
             Ok(user) => CreateUserResult::User(User::from(user)),
             Err(e) => CreateUserResult::Error(e.into()),
         }

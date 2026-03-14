@@ -4,7 +4,8 @@ use async_graphql::{Context, Object, SimpleObject, Union};
 use service::ServiceContainer;
 use uuid::Uuid;
 
-use crate::types::error::MessageError;
+use crate::types::error::{MessageError, MissingIdempotencyKeyError};
+use crate::types::idempotency::IdempotencyHeader;
 use crate::types::message::{Message, SendMessageInput};
 use crate::types::pagination::MessagePage;
 
@@ -45,27 +46,6 @@ impl MessageQuery {
             Err(e) => MessagePageResult::Error(e.into()),
         }
     }
-
-    /// Fetch the latest N messages in a room (newest first).
-    async fn latest_messages(
-        &self,
-        ctx: &Context<'_>,
-        room_id: Uuid,
-        #[graphql(default = 10)] n: usize,
-    ) -> MessageListResult {
-        let services = ctx.data_unchecked::<Arc<ServiceContainer>>();
-        match services
-            .message
-            .get_latest_n_messages_in_room(room_id, n)
-            .await
-        {
-            Ok(messages) => {
-                let items = messages.into_iter().map(Message::from).collect();
-                MessageListResult::Messages(MessageList { items })
-            }
-            Err(e) => MessageListResult::Error(e.into()),
-        }
-    }
 }
 
 #[derive(Default)]
@@ -73,17 +53,21 @@ pub struct MessageMutation;
 
 #[Object]
 impl MessageMutation {
-    /// Send a message to a room. Uses idempotency key to prevent duplicates.
+    /// Send a message to a room. Requires the `Idempotency-Key` HTTP header.
     async fn send_message(&self, ctx: &Context<'_>, input: SendMessageInput) -> SendMessageResult {
+        let idempotency_key = match ctx.data_unchecked::<IdempotencyHeader>().0 {
+            Some(key) => key,
+            None => {
+                return SendMessageResult::Error(MessageError::MissingIdempotencyKey(
+                    MissingIdempotencyKeyError::new(),
+                ));
+            }
+        };
+
         let services = ctx.data_unchecked::<Arc<ServiceContainer>>();
         match services
             .message
-            .add_message(
-                &input.content,
-                input.sender,
-                input.room,
-                input.idempotency_key,
-            )
+            .add_message(&input.content, input.sender, input.room, idempotency_key)
             .await
         {
             Ok(msg) => SendMessageResult::Message(Message::from(msg)),
@@ -95,7 +79,7 @@ impl MessageMutation {
     async fn delete_message(&self, ctx: &Context<'_>, id: Uuid) -> DeleteMessageResult {
         let services = ctx.data_unchecked::<Arc<ServiceContainer>>();
         match services.message.delete_message(id).await {
-            Ok(()) => DeleteMessageResult::Success(DeleteSuccess { success: true }),
+            Ok(message_id) => DeleteMessageResult::Success(DeleteSuccess { id: message_id }),
             Err(e) => DeleteMessageResult::Error(e.into()),
         }
     }
@@ -110,7 +94,7 @@ pub struct MessageList {
 /// Wrapper for successful delete operations.
 #[derive(SimpleObject)]
 pub struct DeleteSuccess {
-    pub success: bool,
+    pub id: Uuid,
 }
 
 /// Result union for queries returning a list of messages.

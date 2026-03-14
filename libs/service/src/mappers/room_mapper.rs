@@ -9,7 +9,7 @@ impl EntityToDomain<DomainRoom> for EntityRoom {
         DomainRoom {
             id: self.public_id,
             name: self.name,
-            capacity: self.capacity,
+            capacity: self.capacity as u32,
             description: self.description,
         }
     }

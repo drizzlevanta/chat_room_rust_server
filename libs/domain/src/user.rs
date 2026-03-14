@@ -4,7 +4,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 /// Domain representation of a user
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct User {
     pub id: Uuid, // Unique identifier for the user. This is the public id.
     pub name: String,

@@ -4,7 +4,8 @@ use async_graphql::{Context, Object, SimpleObject, Union};
 use service::ServiceContainer;
 use uuid::Uuid;
 
-use crate::types::error::RoomError;
+use crate::types::idempotency::IdempotencyHeader;
+use crate::types::error::{MissingIdempotencyKeyError, RoomError};
 use crate::types::room::{CreateRoomInput, Room};
 
 #[derive(Default)]
@@ -42,10 +43,15 @@ pub struct RoomMutation;
 
 #[Object]
 impl RoomMutation {
-    /// Create a new room.
+    /// Create a new room. Requires the `Idempotency-Key` HTTP header.
     async fn create_room(&self, ctx: &Context<'_>, input: CreateRoomInput) -> CreateRoomResult {
+        let idempotency_key = match ctx.data_unchecked::<IdempotencyHeader>().0 {
+            Some(key) => key,
+            None => return CreateRoomResult::Error(RoomError::MissingIdempotencyKey(MissingIdempotencyKeyError::new())),
+        };
+
         let services = ctx.data_unchecked::<Arc<ServiceContainer>>();
-        match services.room.add_room(input.name, input.capacity).await {
+        match services.room.add_room(input.name, input.capacity, idempotency_key).await {
             Ok(room) => CreateRoomResult::Room(Room::from(room)),
             Err(e) => CreateRoomResult::Error(e.into()),
         }

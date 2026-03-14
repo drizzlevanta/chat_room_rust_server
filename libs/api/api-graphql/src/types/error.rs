@@ -3,6 +3,7 @@ use domain::constants::MAX_MESSAGE_LENGTH;
 use service::message_service::MessageServiceError;
 use service::room_service::RoomServiceError;
 use service::user_service::UserServiceError;
+use tracing::error;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -20,6 +21,21 @@ impl InternalError {
     pub fn new() -> Self {
         Self {
             message: "Internal server error".into(),
+        }
+    }
+}
+
+/// Returned when a mutation requires the `Idempotency-Key` header but it was
+/// missing or not a valid UUID.
+#[derive(SimpleObject, Debug, Clone)]
+pub struct MissingIdempotencyKeyError {
+    pub message: String,
+}
+
+impl MissingIdempotencyKeyError {
+    pub fn new() -> Self {
+        Self {
+            message: "Missing or invalid Idempotency-Key header. Provide a valid UUID.".into(),
         }
     }
 }
@@ -59,6 +75,7 @@ pub enum MessageError {
     UserNotFoundInRoom(UserNotFoundInRoomError),
     RoomNotFound(RoomNotFoundError),
     MessageNotFound(MessageNotFoundError),
+    MissingIdempotencyKey(MissingIdempotencyKeyError),
     InternalError(InternalError),
 }
 
@@ -82,6 +99,7 @@ pub enum RoomError {
     RoomNotFound(RoomNotFoundError),
     MaxCapacityExceeded(MaxCapacityExceededError),
     RoomNotAdded(RoomNotAddedError),
+    MissingIdempotencyKey(MissingIdempotencyKeyError),
     InternalError(InternalError),
 }
 
@@ -125,6 +143,7 @@ pub enum UserError {
     UserAlreadyExists(UserAlreadyExistsError),
     UserStatusUpdateFailed(UserStatusUpdateFailedError),
     InvalidStatus(InvalidStatusError),
+    MissingIdempotencyKey(MissingIdempotencyKeyError),
     InternalError(InternalError),
 }
 
@@ -146,7 +165,7 @@ impl From<MessageServiceError> for MessageError {
                 message: err.to_string(),
                 max_length: MAX_MESSAGE_LENGTH,
             }),
-            MessageServiceError::UserNotFoundinRoom { user_id, room_id } => {
+            MessageServiceError::UserNotFoundInRoom { user_id, room_id } => {
                 Self::UserNotFoundInRoom(UserNotFoundInRoomError {
                     message: err.to_string(),
                     user_id,
@@ -164,7 +183,7 @@ impl From<MessageServiceError> for MessageError {
                 })
             }
             MessageServiceError::DatabaseError(ref inner) => {
-                eprintln!("Database error in message service: {inner}");
+                error!(error = %inner, "database error in message service");
                 Self::InternalError(InternalError::new())
             }
         }
@@ -185,13 +204,13 @@ impl From<RoomServiceError> for RoomError {
                 })
             }
             RoomServiceError::RoomNotAdded(ref reason) => {
-                eprintln!("Failed to add room: {reason}");
+                error!(reason = %reason, "failed to add room");
                 Self::RoomNotAdded(RoomNotAddedError {
                     message: "Failed to add room".into(),
                 })
             }
             RoomServiceError::DatabaseError(ref inner) => {
-                eprintln!("Database error in room service: {inner}");
+                error!(error = %inner, "database error in room service");
                 Self::InternalError(InternalError::new())
             }
         }
@@ -219,20 +238,20 @@ impl From<UserServiceError> for UserError {
                 message: err.to_string(),
             }),
             UserServiceError::UserNotAdded(ref name) => {
-                eprintln!("Failed to add user: {name}");
+                error!(name = %name, "failed to add user");
                 Self::UserNotAdded(UserNotAddedError {
                     message: format!("Failed to add user '{name}'"),
                     name: name.clone(),
                 })
             }
             UserServiceError::UserStatusUpdateFailed(ref reason) => {
-                eprintln!("Failed to update user status: {reason}");
+                error!(reason = %reason, "failed to update user status");
                 Self::UserStatusUpdateFailed(UserStatusUpdateFailedError {
                     message: "Failed to update user status".into(),
                 })
             }
             UserServiceError::DatabaseError(ref inner) => {
-                eprintln!("Database error in user service: {inner}");
+                error!(error = %inner, "database error in user service");
                 Self::InternalError(InternalError::new())
             }
         }

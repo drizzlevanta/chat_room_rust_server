@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 use domain::{constants::MAX_MESSAGE_LENGTH, message::Message, pagination::CursorPage};
 use entity::message::Column as MessageColumn;
@@ -13,7 +15,7 @@ use sea_orm::{
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::cache::ChatCache;
+use crate::cache::{ChatCache, IdempotencyKey, LATEST_MESSAGES_CACHE_LIMIT};
 use crate::mappers::{EntityToDomain, message_mapper::MessageContext};
 
 /// Service layer for message-related operations. This is where business logic related to messages is implemented, such as validation,
@@ -30,7 +32,7 @@ impl MessageService {
 
     /// Base query that selects message fields with joined user/room public IDs,
     /// filtered by `room_id`. All message-listing functions build on top of this.
-    fn base_message_query(room_id: Uuid) -> Select<MessageEntity> {
+    fn base_message_query() -> Select<MessageEntity> {
         MessageEntity::find()
             .select_only()
             .column_as(MessageColumn::PublicId, "id")
@@ -40,7 +42,7 @@ impl MessageService {
             .column_as(RoomColumn::PublicId, "room")
             .join(JoinType::InnerJoin, entity::message::Relation::User.def())
             .join(JoinType::InnerJoin, entity::message::Relation::Room.def())
-            .filter(RoomColumn::PublicId.eq(room_id))
+        // .filter(RoomColumn::PublicId.eq(room_id))
     }
 
     /// Add a message to a room.
@@ -55,6 +57,25 @@ impl MessageService {
         user_id: Uuid,
         room_id: Uuid,
         idempotency_key: Uuid,
+    ) -> Result<Message, MessageServiceError> {
+        // Check idempotency cache first — return cached message on retry
+        let cache_key = IdempotencyKey {
+            user_id,
+            key: idempotency_key,
+        };
+
+        self.cache
+            .idempotency_message
+            .try_get_with(cache_key, self.add_message_inner(content, user_id, room_id))
+            .await
+            .map_err(|e: Arc<MessageServiceError>| Arc::unwrap_or_clone(e))
+    }
+
+    async fn add_message_inner(
+        &self,
+        content: &str,
+        user_id: Uuid,
+        room_id: Uuid,
     ) -> Result<Message, MessageServiceError> {
         // Validate message length, counting by characters
         if content.chars().count() > MAX_MESSAGE_LENGTH {
@@ -72,7 +93,7 @@ impl MessageService {
             .into_tuple::<(i32, i32)>()
             .one(&self.db)
             .await? // Bubble up DB errors
-            .ok_or(MessageServiceError::UserNotFoundinRoom { user_id, room_id })?; // Return error if no such user in room
+            .ok_or(MessageServiceError::UserNotFoundInRoom { user_id, room_id })?; // Return error if no such user in room
 
         // Insert message
         let message = entity::message::ActiveModel {
@@ -84,19 +105,18 @@ impl MessageService {
 
         let message = message.insert(&self.db).await?;
 
-        // Return domain message
+        // Invalidate the cached first page for this room
+        self.cache.invalidate_messages(&room_id).await;
+
+        // Convert to domain message
         let domain_message = message.entity_to_domain(MessageContext { user_id, room_id });
 
         Ok(domain_message)
     }
 
-    /// Fetch a single message by its public_id (used for idempotent retries).
-    async fn get_message_by_id(
-        &self,
-        message_id: Uuid,
-        room_id: Uuid,
-    ) -> Result<Message, MessageServiceError> {
-        let row = Self::base_message_query(room_id)
+    /// Fetch a single message by its public_id
+    async fn get_message_by_id(&self, message_id: Uuid) -> Result<Message, MessageServiceError> {
+        let row = Self::base_message_query()
             .filter(MessageColumn::PublicId.eq(message_id))
             .into_model::<MessageRow>()
             .one(&self.db)
@@ -111,23 +131,8 @@ impl MessageService {
         &self,
         room_id: Uuid,
     ) -> Result<Vec<Message>, MessageServiceError> {
-        let message_rows = Self::base_message_query(room_id)
-            .into_model::<MessageRow>()
-            .all(&self.db)
-            .await?;
-
-        Ok(message_rows.into_iter().map(Message::from).collect())
-    }
-
-    /// Get the latest N messages in a room, ordered from newest to oldest.
-    pub async fn get_latest_n_messages_in_room(
-        &self,
-        room_id: Uuid,
-        n: usize,
-    ) -> Result<Vec<Message>, MessageServiceError> {
-        let message_rows = Self::base_message_query(room_id)
-            .order_by_desc(MessageColumn::CreatedAt)
-            .limit(n as u64)
+        let message_rows = Self::base_message_query()
+            .filter(RoomColumn::PublicId.eq(room_id))
             .into_model::<MessageRow>()
             .all(&self.db)
             .await?;
@@ -150,7 +155,47 @@ impl MessageService {
         cursor: Option<Uuid>,
         limit: u64,
     ) -> Result<CursorPage<Message>, MessageServiceError> {
-        let mut query = Self::base_message_query(room_id).order_by_desc(MessageColumn::PublicId);
+        // For small limits and first page, try the cache first
+        if limit <= LATEST_MESSAGES_CACHE_LIMIT && cursor.is_none() {
+            // Try cache first, if not found, query the database to populate the full page, then slice
+            let cached_page = self
+                .cache
+                .latest_messages
+                .try_get_with(
+                    room_id,
+                    self.get_messages_in_room_inner(room_id, None, LATEST_MESSAGES_CACHE_LIMIT),
+                )
+                .await
+                .map_err(|e: Arc<MessageServiceError>| Arc::unwrap_or_clone(e))?;
+
+            // Slice down to the requested limit
+            let limit_usize = limit as usize;
+            if limit_usize >= cached_page.items.len() {
+                return Ok(cached_page);
+            }
+            let items = cached_page.items[..limit_usize].to_vec();
+            let next_cursor = items.last().map(|m| m.id);
+            return Ok(CursorPage {
+                items,
+                next_cursor,
+                has_next_page: true, // always true since we sliced the cached page
+            });
+        } else {
+            // For larger limits or cache misses, query the database directly
+            self.get_messages_in_room_inner(room_id, cursor, limit)
+                .await
+        }
+    }
+
+    async fn get_messages_in_room_inner(
+        &self,
+        room_id: Uuid,
+        cursor: Option<Uuid>,
+        limit: u64,
+    ) -> Result<CursorPage<Message>, MessageServiceError> {
+        let mut query = Self::base_message_query()
+            .filter(RoomColumn::PublicId.eq(room_id))
+            .order_by_desc(MessageColumn::PublicId);
 
         // Fetch messages with IDs less than the cursor for reverse chronological order
         // If cursor is None, this condition is ignored and we start from the most recent messages
@@ -189,28 +234,37 @@ impl MessageService {
     }
 
     /// Delete a message by its public id
-    pub async fn delete_message(&self, message_id: Uuid) -> Result<(), MessageServiceError> {
-        let res = MessageEntity::delete_many()
+    pub async fn delete_message(&self, message_id: Uuid) -> Result<Uuid, MessageServiceError> {
+        // Single joined query: find the message and its room's public_id
+        let (msg_id, room_public_id) = MessageEntity::find()
+            .select_only()
+            .column(MessageColumn::Id)
+            .column_as(RoomColumn::PublicId, "room_public_id")
+            .join(JoinType::InnerJoin, entity::message::Relation::Room.def())
             .filter(MessageColumn::PublicId.eq(message_id))
-            .exec(&self.db)
-            .await?;
+            .into_tuple::<(i32, Uuid)>()
+            .one(&self.db)
+            .await?
+            .ok_or(MessageServiceError::MessageNotFound(message_id))?;
 
-        if res.rows_affected == 0 {
-            return Err(MessageServiceError::MessageNotFound(message_id));
-        }
+        // Delete by primary key — no second lookup needed
+        MessageEntity::delete_by_id(msg_id).exec(&self.db).await?;
 
-        Ok(())
+        // Invalidate the cached first page for this room
+        self.cache.invalidate_messages(&room_public_id).await;
+
+        Ok(message_id)
     }
 }
 
 /// Errors that can occur in MessageService operations.
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum MessageServiceError {
     #[error("Message too long. Maximum length is {MAX_MESSAGE_LENGTH} characters.")]
     MessageTooLong,
 
     #[error("User with id {user_id} not found in room with id {room_id}")]
-    UserNotFoundinRoom { user_id: Uuid, room_id: Uuid },
+    UserNotFoundInRoom { user_id: Uuid, room_id: Uuid },
 
     #[error("Room with id {0} not found")]
     RoomNotFound(Uuid),

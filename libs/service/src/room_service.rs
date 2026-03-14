@@ -26,7 +26,24 @@ impl RoomService {
     }
 
     /// Add a new room with the given name and optional capacity.
+    ///
+    /// `idempotency_key` is a client-generated UUID that prevents duplicate
+    /// rooms on retries. If the same key is sent again within the cache
+    /// TTL, the previously created room is returned instead of inserting a new one.
     pub async fn add_room(
+        &self,
+        name: String,
+        capacity: Option<u32>,
+        idempotency_key: Uuid,
+    ) -> Result<DomainRoom, RoomServiceError> {
+        self.cache
+            .idempotency_room
+            .try_get_with(idempotency_key, self.add_room_inner(name, capacity))
+            .await
+            .map_err(|e: Arc<RoomServiceError>| Arc::unwrap_or_clone(e))
+    }
+
+    async fn add_room_inner(
         &self,
         name: String,
         capacity: Option<u32>,
@@ -40,9 +57,7 @@ impl RoomService {
 
         let room = entity::room::ActiveModel {
             name: Set(name),
-            capacity: Set(capacity
-                .map(|c| i32::try_from(c).unwrap_or(DEFAULT_ROOM_CAPACITY))
-                .unwrap_or(DEFAULT_ROOM_CAPACITY)),
+            capacity: Set(capacity.unwrap_or(DEFAULT_ROOM_CAPACITY) as i32),
             description: Set(None),
             ..Default::default()
         };
@@ -142,7 +157,7 @@ impl RoomService {
         }
 
         if let Some(capacity) = capacity {
-            active.capacity = Set(i32::try_from(capacity).unwrap_or(DEFAULT_ROOM_CAPACITY));
+            active.capacity = Set(capacity as i32);
         }
 
         // `updated_at` will be automatically set by the ActiveModelBehavior implementation

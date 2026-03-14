@@ -65,6 +65,4 @@ pub struct SendMessageInput {
     pub sender: Uuid,
     /// Public ID of the room.
     pub room: Uuid,
-    /// Client-generated idempotency key to prevent duplicate sends on retries.
-    pub idempotency_key: Uuid,
 }

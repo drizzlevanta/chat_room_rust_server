@@ -5,6 +5,8 @@ use migration::{Migrator, MigratorTrait};
 use sea_orm::Database;
 use service::ServiceContainer;
 use tokio::net::TcpListener;
+use tracing::info;
+use tracing_subscriber::EnvFilter;
 
 /// Start the Axum server that composes all API layers (GraphQL, REST, etc.).
 ///
@@ -15,16 +17,24 @@ pub async fn start_server() {
     // Load environment variables from .env file
     dotenvy::dotenv().ok();
 
+    // ── Logging ───────────────────────────────────────────────────────
+    // Initialize tracing subscriber with environment filter (default to INFO level)
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+
     // ── Database ──────────────────────────────────────────────────────
     let db_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    println!("Connecting to database at {db_url}");
+    info!("Connecting to database at {db_url}");
 
     let db = Database::connect(&db_url)
         .await
         .expect("Failed to connect to database");
 
     Migrator::up(&db, None).await.unwrap();
-    println!("Migrations applied");
+    info!("Migrations applied");
 
     // ── Services ─────────────────────────────────────────────────────
     // Instantiate the shared service container that will be passed to all API layers.
@@ -42,7 +52,7 @@ pub async fn start_server() {
     let addr = format!("{host}:{port}");
 
     let listener = TcpListener::bind(&addr).await.unwrap();
-    println!("Server running on http://{addr}");
+    info!("Server running on http://{addr}");
 
     axum::serve(listener, app).await.unwrap();
 }

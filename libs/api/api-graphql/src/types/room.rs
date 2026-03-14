@@ -7,7 +7,7 @@ pub struct Room {
     pub id: Uuid,
     pub name: String,
     pub description: Option<String>,
-    pub capacity: i32,
+    pub capacity: u32,
 }
 
 impl From<domain::room::Room> for Room {
