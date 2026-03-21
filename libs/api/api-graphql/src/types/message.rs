@@ -58,7 +58,7 @@ impl From<DomainMessage> for Message {
 }
 
 /// GraphQL input for sending a message.
-#[derive(InputObject)]
+#[derive(InputObject, Debug)]
 pub struct SendMessageInput {
     pub content: String,
     /// Public ID of the sender.

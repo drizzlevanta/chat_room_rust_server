@@ -10,6 +10,8 @@ thiserror = "2.0.12"
 uuid = {version = "1.17.0", features = ["v4", "v7"]}
 chrono = "0.4.41"
 moka = { version = "0.12", features = ["future"] }
+tracing = "0.1.44"
+tokio = { version = "1.42.0", features = ["sync"] }
 
 [dependencies.sea-orm]
 version = "2.0.0-rc" # sea-orm version

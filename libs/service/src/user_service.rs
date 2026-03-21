@@ -14,6 +14,8 @@ use sea_orm::{
     QueryFilter, QuerySelect, RelationTrait, Select,
 };
 use thiserror::Error;
+use tracing::error;
+use tracing::{debug, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::mappers::{TryEntityToDomain, user_mapper::RoomParam};
@@ -33,6 +35,7 @@ impl UserService {
     /// Adds a new user to the system.
     /// If a room id is provided, associates the user with that room.
     /// If the room is not found, user is still created but without a room association.
+    #[instrument(skip(self), name = "UserService::add_user", err)]
     pub async fn add_user(
         &self,
         name: String,
@@ -50,6 +53,7 @@ impl UserService {
             .map_err(|e| Arc::unwrap_or_clone(e))
     }
 
+    #[instrument(skip(self), name = "UserService::add_user_inner", err)]
     async fn add_user_inner(
         &self,
         name: String,
@@ -62,7 +66,10 @@ impl UserService {
                 .filter(RoomColumn::PublicId.eq(room_id))
                 .one(&self.db)
                 .await
-                .unwrap_or(None) // If DB error occurs, treat as room not found //TODO log it
+                .unwrap_or_else(|e| {
+                    warn!(error = %e, "room lookup failed, creating user without room");
+                    None
+                }) // If DB error occurs, treat as room not found to allow user creation to proceed without room association
         } else {
             None
         };
@@ -81,14 +88,16 @@ impl UserService {
             .await
             .map_err(|_| UserServiceError::UserNotAdded(name.clone()))?;
 
+        debug!("inserted into DB");
+
         // Convert to domain user
         let user = user.try_entity_to_domain(room_entity.map(RoomParam::Entity))?;
 
-        // Cache the new user
         self.cache.users.insert(user.id, user.clone()).await;
         if let Some(room_id) = room {
-            self.cache.users_in_room.invalidate(&room_id).await; // Invalidate users-in-room cache for the room
+            self.cache.users_in_room.invalidate(&room_id).await;
         }
+        debug!("user cached");
 
         Ok(user)
     }
@@ -108,12 +117,14 @@ impl UserService {
 
     /// Retrieves a user by their public Id.
     /// Uses a single database query with JOIN to fetch user and room together.
+    #[instrument(skip(self), name = "UserService::get_user_by_id", err)]
     pub async fn get_user_by_id(&self, user_id: Uuid) -> Result<DomainUser, UserServiceError> {
         // Check cache first
         let user = self
             .cache
             .users
             .try_get_with(user_id, async {
+                debug!("cache miss, querying DB");
                 let user_row = Self::user_row_query()
                     .filter(UserColumn::PublicId.eq(user_id))
                     .into_model::<UserRow>()
@@ -133,6 +144,7 @@ impl UserService {
     }
 
     /// Fetch users in a room by the room's public ID.
+    #[instrument(skip(self), name = "UserService::get_users_in_room", err)]
     pub async fn get_users_in_room(
         &self,
         room_id: Uuid,
@@ -142,6 +154,7 @@ impl UserService {
             .cache
             .users_in_room
             .try_get_with(room_id, async {
+                debug!("cache miss, querying DB");
                 let user_rows = Self::user_row_query()
                     .filter(RoomColumn::PublicId.eq(room_id))
                     .into_model::<UserRow>()
@@ -159,6 +172,7 @@ impl UserService {
 
     /// Updates the status of a user.
     /// Also sets `last_seen_at` to the current time when transitioning to `Offline` or `Away`.
+    #[instrument(skip(self), name = "UserService::update_user_status", err)]
     pub async fn update_user_status(
         &self,
         user_id: Uuid,
@@ -177,18 +191,19 @@ impl UserService {
         let result = query.exec(&self.db).await?;
 
         if result.rows_affected == 0 {
+            warn!("user not found for status update");
             return Err(UserServiceError::UserNotFound(user_id));
         }
 
-        // Invalidate caches for this user
-        // We don't have the room ID here, so we'll just invalidate the user cache and rely on cache expiration for the users-in-room cache
         self.cache.users.invalidate(&user_id).await;
+        info!("user status updated");
 
         Ok(())
     }
 
     /// Deletes a user by their public Id.
     /// Uses a single database query to delete directly.
+    #[instrument(skip(self), name = "UserService::delete_user", err)]
     pub async fn delete_user(&self, user_id: Uuid) -> Result<Uuid, UserServiceError> {
         // Delete directly with a single query
         let delete_result = UserEntity::delete_many()
@@ -198,25 +213,25 @@ impl UserService {
 
         // Check if any rows were deleted
         if delete_result.rows_affected == 0 {
+            warn!("user not found for deletion");
             return Err(UserServiceError::UserNotFound(user_id));
         }
 
-        // Invalidate caches for this user
-        // We don't have the room ID here, so we'll just invalidate the user cache and rely on cache expiration for the users-in-room cache
         self.cache.users.invalidate(&user_id).await;
+        info!("user deleted");
 
         Ok(user_id)
     }
 
     /// Get list of users by status, optionally filtered by room.
     /// If room_id is provided, only users in that room with the given status are returned.
+    #[instrument(skip(self), name = "UserService::get_users_by_status", err)]
     pub async fn get_users_by_status(
         &self,
         status: Status,
         room_id: Option<Uuid>,
     ) -> Result<Vec<DomainUser>, UserServiceError> {
         // Bypass the cache for this query since it's more dynamic and less likely to be repeated frequently, and caching would be more complex due to the combination of filters (status + optional room).
-
         // Get status string
         let status = status.to_string();
 
@@ -228,6 +243,7 @@ impl UserService {
         }
 
         let user_rows = query.into_model::<UserRow>().all(&self.db).await?;
+        debug!("queried DB for users by status");
 
         let domain_users = user_rows.into_iter().map(DomainUser::from).collect();
         Ok(domain_users)
@@ -275,8 +291,17 @@ impl From<UserRow> for DomainUser {
         DomainUser {
             id: row.id,
             name: row.name,
-            // TODO log parse errors instead of silently converting to None, since that would indicate data integrity issues in the DB
-            status: row.status.and_then(|s| s.parse::<Status>().ok()),
+            status: row.status.and_then(|s| {
+                s.parse::<Status>()
+                    .inspect_err(|e| {
+                        error!(
+                            raw_status = %s,
+                             error = %e,
+                            "Failed to parse user status"
+                        )
+                    })
+                    .ok()
+            }),
             room: row.room,
             last_seen: row.last_seen,
         }

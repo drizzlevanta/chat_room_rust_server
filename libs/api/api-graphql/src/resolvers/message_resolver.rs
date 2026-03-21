@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use async_graphql::{Context, Object, SimpleObject, Union};
 use service::ServiceContainer;
+use tracing::{error, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::types::error::{MessageError, MissingIdempotencyKeyError};
@@ -15,10 +16,12 @@ pub struct MessageQuery;
 #[Object]
 impl MessageQuery {
     /// Fetch all messages in a room (use with caution for large histories).
+    #[instrument(skip(self, ctx), name = "Fetch all messages in room")]
     async fn messages(&self, ctx: &Context<'_>, room_id: Uuid) -> MessageListResult {
         let services = ctx.data_unchecked::<Arc<ServiceContainer>>();
         match services.message.get_all_messages_in_room(room_id).await {
             Ok(messages) => {
+                info!("Fetched {} messages", messages.len());
                 let items = messages.into_iter().map(Message::from).collect();
                 MessageListResult::Messages(MessageList { items })
             }
@@ -29,6 +32,7 @@ impl MessageQuery {
     /// Fetch paginated messages in a room (cursor-based, newest first).
     ///
     /// Pass `None` for `cursor` to start from the most recent messages.
+    #[instrument(skip(self, ctx), name = "Fetch paginated messages in room")]
     async fn messages_paginated(
         &self,
         ctx: &Context<'_>,
@@ -42,7 +46,10 @@ impl MessageQuery {
             .get_messages_in_room(room_id, cursor, limit)
             .await
         {
-            Ok(page) => MessagePageResult::Page(MessagePage::from(page)),
+            Ok(page) => {
+                info!("Fetched paginated messages");
+                MessagePageResult::Page(MessagePage::from(page))
+            }
             Err(e) => MessagePageResult::Error(e.into()),
         }
     }
@@ -54,10 +61,12 @@ pub struct MessageMutation;
 #[Object]
 impl MessageMutation {
     /// Send a message to a room. Requires the `Idempotency-Key` HTTP header.
+    #[instrument(skip(self, ctx), name = "Send message")]
     async fn send_message(&self, ctx: &Context<'_>, input: SendMessageInput) -> SendMessageResult {
         let idempotency_key = match ctx.data_unchecked::<IdempotencyHeader>().0 {
             Some(key) => key,
             None => {
+                error!("Missing Idempotency-Key header");
                 return SendMessageResult::Error(MessageError::MissingIdempotencyKey(
                     MissingIdempotencyKeyError::new(),
                 ));
@@ -70,7 +79,10 @@ impl MessageMutation {
             .add_message(&input.content, input.sender, input.room, idempotency_key)
             .await
         {
-            Ok(msg) => SendMessageResult::Message(Message::from(msg)),
+            Ok(msg) => {
+                info!("Sent message");
+                SendMessageResult::Message(Message::from(msg))
+            }
             Err(e) => SendMessageResult::Error(e.into()),
         }
     }

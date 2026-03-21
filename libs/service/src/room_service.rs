@@ -8,6 +8,7 @@ use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter,
 };
 use thiserror::Error;
+use tracing::{debug, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::cache::ChatCache;
@@ -30,6 +31,7 @@ impl RoomService {
     /// `idempotency_key` is a client-generated UUID that prevents duplicate
     /// rooms on retries. If the same key is sent again within the cache
     /// TTL, the previously created room is returned instead of inserting a new one.
+    #[instrument(skip(self), name = "RoomService::add_room", err, ret(level = "debug"))]
     pub async fn add_room(
         &self,
         name: String,
@@ -43,6 +45,12 @@ impl RoomService {
             .map_err(|e: Arc<RoomServiceError>| Arc::unwrap_or_clone(e))
     }
 
+    #[instrument(
+        skip(self),
+        name = "RoomService::add_room_inner",
+        err,
+        ret(level = "debug")
+    )]
     async fn add_room_inner(
         &self,
         name: String,
@@ -51,6 +59,7 @@ impl RoomService {
         // Validate capacity. This should be done at the service layer since we might have multiple entry points (e.g. REST API, GraphQL, CLI) that can create rooms.
         if let Some(cap) = capacity {
             if cap > MAX_ROOM_CAPACITY {
+                warn!(cap, max = MAX_ROOM_CAPACITY, "capacity exceeded");
                 return Err(RoomServiceError::MaxCapacityExceeded(cap));
             }
         }
@@ -63,6 +72,7 @@ impl RoomService {
         };
 
         let room = room.insert(&self.db).await?;
+        debug!(room_id = %room.public_id, "inserted into DB");
 
         // Invalidate the cache for all rooms since we added a new one
         self.cache.invalidate_all_rooms().await;
@@ -70,49 +80,53 @@ impl RoomService {
         // Add to cache before returning so that subsequent reads can hit the cache
         let room = room.entity_to_domain(());
         self.cache.rooms.insert(room.id, room.clone()).await;
+        debug!(room_id = %room.id, "cached room");
 
         Ok(room)
     }
 
     /// Fetch a room by its public ID.
+    #[instrument(skip(self), name = "RoomService::get_room_by_id", err)]
     pub async fn get_room_by_id(&self, room_id: Uuid) -> Result<DomainRoom, RoomServiceError> {
-        // Check cache first, if not found, fetch from DB and populate cache before returning
         let room = self
             .cache
             .rooms
             .try_get_with(room_id, async {
+                debug!("cache miss, querying DB");
                 let room = RoomEntity::find()
                     .filter(RoomColumn::PublicId.eq(room_id))
                     .one(&self.db)
-                    .await? // bubble up DB errors
-                    .ok_or(RoomServiceError::RoomNotFound(room_id))?; // convert not found to service error
+                    .await?
+                    .ok_or(RoomServiceError::RoomNotFound(room_id))?;
 
                 Ok(room.entity_to_domain(())) as Result<DomainRoom, RoomServiceError>
             })
             .await
-            .map_err(|e: Arc<RoomServiceError>| Arc::unwrap_or_clone(e))?; // unwrap Arc to get the error
+            .map_err(|e: Arc<RoomServiceError>| Arc::unwrap_or_clone(e))?;
 
         Ok(room)
     }
 
     /// Fetch all rooms.
+    #[instrument(skip(self), name = "RoomService::get_all_rooms", err)]
     pub async fn get_all_rooms(&self) -> Result<Vec<DomainRoom>, RoomServiceError> {
-        // Check cache first, if not found, fetch from DB and populate cache before returning
         let rooms = self
             .cache
             .all_rooms
             .try_get_with((), async {
-                let rooms = RoomEntity::find().all(&self.db).await?; // bubble up DB errors
+                debug!("cache miss, querying DB");
+                let rooms = RoomEntity::find().all(&self.db).await?;
 
                 let domain_rooms: Vec<DomainRoom> = rooms
                     .into_iter()
                     .map(|room| room.entity_to_domain(()))
                     .collect();
 
+                info!(count = domain_rooms.len(), "fetched all rooms");
                 Ok(domain_rooms) as Result<Vec<DomainRoom>, RoomServiceError>
             })
             .await
-            .map_err(|e: Arc<RoomServiceError>| Arc::unwrap_or_clone(e))?; // unwrap Arc to get the error
+            .map_err(|e: Arc<RoomServiceError>| Arc::unwrap_or_clone(e))?;
 
         Ok(rooms)
     }
@@ -120,6 +134,7 @@ impl RoomService {
     /// Update a room's name, description, or capacity.
     ///
     /// Only fields set to `Some` are updated; `None` fields are left unchanged.
+    #[instrument(skip(self), name = "RoomService::update_room", err)]
     pub async fn update_room(
         &self,
         room_id: Uuid,
@@ -127,19 +142,18 @@ impl RoomService {
         description: Option<Option<String>>,
         capacity: Option<u32>,
     ) -> Result<DomainRoom, RoomServiceError> {
-        // Nothing to update — return current state without writing
         if name.is_none() && description.is_none() && capacity.is_none() {
+            debug!("no fields to update, returning current state");
             return self.get_room_by_id(room_id).await;
         }
 
-        // Validate capacity if provided
         if let Some(cap) = capacity {
             if cap > MAX_ROOM_CAPACITY {
+                warn!(cap, max = MAX_ROOM_CAPACITY, "capacity exceeded");
                 return Err(RoomServiceError::MaxCapacityExceeded(cap));
             }
         }
 
-        // Fetch the existing room
         let room = RoomEntity::find()
             .filter(RoomColumn::PublicId.eq(room_id))
             .one(&self.db)
@@ -160,33 +174,32 @@ impl RoomService {
             active.capacity = Set(capacity as i32);
         }
 
-        // `updated_at` will be automatically set by the ActiveModelBehavior implementation
         let updated = active.update(&self.db).await?;
+        debug!("updated in DB");
 
-        // Invalidate cache for this room and all rooms list since we updated a room
         self.cache.invalidate_room(&room_id).await;
 
-        // Re-populate individual room cache so subsequent reads hit cache
         let room = updated.entity_to_domain(());
         self.cache.rooms.insert(room.id, room.clone()).await;
+        debug!("cache refreshed");
 
         Ok(room)
     }
 
+    #[instrument(skip(self), name = "RoomService::delete_room", err)]
     pub async fn delete_room(&self, room_id: Uuid) -> Result<Uuid, RoomServiceError> {
-        // Delete directly with a single query
         let delete_result = RoomEntity::delete_many()
             .filter(RoomColumn::PublicId.eq(room_id))
             .exec(&self.db)
             .await?;
 
-        // Check if any rows were deleted
         if delete_result.rows_affected == 0 {
+            warn!("room not found for deletion");
             return Err(RoomServiceError::RoomNotFound(room_id));
         }
 
-        // Invalidate cache for this room and all rooms list since we deleted a room
         self.cache.invalidate_room(&room_id).await;
+        info!("room deleted");
 
         Ok(room_id)
     }

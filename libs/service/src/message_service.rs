@@ -13,6 +13,7 @@ use sea_orm::{
     FromQueryResult, JoinType, QueryFilter, QuerySelect, RelationTrait, Select,
 };
 use thiserror::Error;
+use tracing::{debug, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::cache::{ChatCache, IdempotencyKey, LATEST_MESSAGES_CACHE_LIMIT};
@@ -51,6 +52,7 @@ impl MessageService {
     /// messages on retries.  If the same key is sent again within the cache
     /// TTL (5 minutes), the previously created message is returned instead
     /// of inserting a new one.
+    #[instrument(skip(self), name = "MessageService::add_message", err)]
     pub async fn add_message(
         &self,
         content: &str,
@@ -71,6 +73,7 @@ impl MessageService {
             .map_err(|e: Arc<MessageServiceError>| Arc::unwrap_or_clone(e))
     }
 
+    #[instrument(skip(self), name = "MessageService::add_message_inner", err)]
     async fn add_message_inner(
         &self,
         content: &str,
@@ -78,7 +81,13 @@ impl MessageService {
         room_id: Uuid,
     ) -> Result<Message, MessageServiceError> {
         // Validate message length, counting by characters
-        if content.chars().count() > MAX_MESSAGE_LENGTH {
+        let char_count = content.chars().count();
+        if char_count > MAX_MESSAGE_LENGTH {
+            warn!(
+                length = char_count,
+                max = MAX_MESSAGE_LENGTH,
+                "message too long"
+            );
             return Err(MessageServiceError::MessageTooLong);
         }
 
@@ -104,6 +113,7 @@ impl MessageService {
         };
 
         let message = message.insert(&self.db).await?;
+        debug!("inserted into DB");
 
         // Invalidate the cached first page for this room
         self.cache.invalidate_messages(&room_id).await;
@@ -115,6 +125,7 @@ impl MessageService {
     }
 
     /// Fetch a single message by its public_id
+    #[instrument(skip(self), name = "MessageService::get_message_by_id", err)]
     async fn get_message_by_id(&self, message_id: Uuid) -> Result<Message, MessageServiceError> {
         let row = Self::base_message_query()
             .filter(MessageColumn::PublicId.eq(message_id))
@@ -127,6 +138,8 @@ impl MessageService {
     }
 
     /// Get all messages in a room. Use with caution for rooms with large message histories, as it loads everything into memory.
+
+    #[instrument(skip(self), name = "MessageService::get_all_messages_in_room", err)]
     pub async fn get_all_messages_in_room(
         &self,
         room_id: Uuid,
@@ -149,6 +162,7 @@ impl MessageService {
     ///
     /// Pass `None` as `cursor` to start from the most recent messages.
     /// Use the returned `next_cursor` value to fetch the next page.
+    #[instrument(skip(self), name = "MessageService::get_messages_in_room", err)]
     pub async fn get_messages_in_room(
         &self,
         room_id: Uuid,
@@ -157,6 +171,7 @@ impl MessageService {
     ) -> Result<CursorPage<Message>, MessageServiceError> {
         // For small limits and first page, try the cache first
         if limit <= LATEST_MESSAGES_CACHE_LIMIT && cursor.is_none() {
+            debug!("checking cache for latest messages");
             // Try cache first, if not found, query the database to populate the full page, then slice
             let cached_page = self
                 .cache
@@ -182,11 +197,13 @@ impl MessageService {
             });
         } else {
             // For larger limits or cache misses, query the database directly
+            debug!("cache miss or pagination beyond first page, querying DB");
             self.get_messages_in_room_inner(room_id, cursor, limit)
                 .await
         }
     }
 
+    #[instrument(skip(self), name = "MessageService::get_messages_in_room_inner", err)]
     async fn get_messages_in_room_inner(
         &self,
         room_id: Uuid,
@@ -226,6 +243,8 @@ impl MessageService {
             None
         };
 
+        debug!(next_cursor = ?next_cursor, "fetched page");
+
         Ok(CursorPage {
             items,
             next_cursor,
@@ -234,6 +253,7 @@ impl MessageService {
     }
 
     /// Delete a message by its public id
+    #[instrument(skip(self), name = "MessageService::delete_message", err)]
     pub async fn delete_message(&self, message_id: Uuid) -> Result<Uuid, MessageServiceError> {
         // Single joined query: find the message and its room's public_id
         let (msg_id, room_public_id) = MessageEntity::find()
@@ -249,6 +269,8 @@ impl MessageService {
 
         // Delete by primary key — no second lookup needed
         MessageEntity::delete_by_id(msg_id).exec(&self.db).await?;
+
+        info!("deleted message");
 
         // Invalidate the cached first page for this room
         self.cache.invalidate_messages(&room_public_id).await;

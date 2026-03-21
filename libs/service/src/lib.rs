@@ -3,6 +3,7 @@ use std::sync::Arc;
 use sea_orm::DatabaseConnection;
 
 pub mod cache;
+pub mod event_bus;
 pub mod mappers;
 pub mod message_service;
 pub mod room_service;
@@ -13,12 +14,15 @@ use message_service::MessageService;
 use room_service::RoomService;
 use user_service::UserService;
 
+use crate::event_bus::EventBus;
+
 /// Holds all service instances. Wrap in `Arc` to share across API layers.
 pub struct ServiceContainer {
     pub room: RoomService,
     pub user: UserService,
     pub message: MessageService,
     pub cache: ChatCache,
+    pub event_bus: EventBus,
 }
 
 impl ServiceContainer {
@@ -29,6 +33,7 @@ impl ServiceContainer {
             user: UserService::new(db.clone(), cache.clone()),
             message: MessageService::new(db, cache.clone()),
             cache,
+            event_bus: EventBus::new(),
         }
     }
 
