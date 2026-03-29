@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
+use chrono::Utc;
 use domain::constants::{DEFAULT_ROOM_CAPACITY, MAX_ROOM_CAPACITY};
+use domain::events::{RoomEvent, TypingEvent};
 use domain::room::Room as DomainRoom;
 use entity::room::Column as RoomColumn;
 use entity::room::Entity as RoomEntity;
@@ -11,7 +13,8 @@ use thiserror::Error;
 use tracing::{debug, info, instrument, warn};
 use uuid::Uuid;
 
-use crate::cache::ChatCache;
+use crate::cache::{ChatCache, TypingIndicatorKey};
+use crate::event_bus::EventBus;
 use crate::mappers::EntityToDomain;
 
 /// Service layer for room-related operations. This is where business logic related to rooms is implemented, such as validation,
@@ -19,11 +22,16 @@ use crate::mappers::EntityToDomain;
 pub struct RoomService {
     db: DatabaseConnection,
     cache: ChatCache,
+    event_bus: EventBus,
 }
 
 impl RoomService {
-    pub fn new(db: DatabaseConnection, cache: ChatCache) -> Self {
-        Self { db, cache }
+    pub fn new(db: DatabaseConnection, cache: ChatCache, event_bus: EventBus) -> Self {
+        Self {
+            db,
+            cache,
+            event_bus,
+        }
     }
 
     /// Add a new room with the given name and optional capacity.
@@ -81,6 +89,9 @@ impl RoomService {
         let room = room.entity_to_domain(());
         self.cache.rooms.insert(room.id, room.clone()).await;
         debug!(room_id = %room.id, "cached room");
+
+        // Publish to event bus so subscribers can react to the new room
+        self.event_bus.room.publish(RoomEvent::Added(room.clone()));
 
         Ok(room)
     }
@@ -199,9 +210,58 @@ impl RoomService {
         }
 
         self.cache.invalidate_room(&room_id).await;
+
+        // Publish to event bus so subscribers can react to the deleted room
+        self.event_bus.room.publish(RoomEvent::Removed(room_id));
         info!("room deleted");
 
         Ok(room_id)
+    }
+
+    /// Set a user's typing status in a room.
+    ///
+    /// This is ephemeral state — not persisted to the database — published
+    /// only through the event bus for real-time subscriptions.
+    ///
+    /// **Debounce strategy:**
+    /// - `is_typing = true`: only published when no recent event exists in the
+    ///   cache (TTL-based debounce). Repeated "start typing" calls within the
+    ///   TTL window are silently dropped to avoid flooding subscribers.
+    /// - `is_typing = false`: always published immediately and the debounce
+    ///   guard is removed, so the next "start typing" will go through.
+    #[instrument(skip(self), name = "RoomService::set_user_typing", err)]
+    pub async fn set_user_typing(
+        &self,
+        room_id: Uuid,
+        user_id: Uuid,
+        is_typing: bool,
+    ) -> Result<(), RoomServiceError> {
+        let key = TypingIndicatorKey { room_id, user_id };
+
+        if is_typing {
+            // Debounce: if entry exists in cache, we published recently. Skip publishing.
+            if self.cache.typing_indicators.get(&key).await.is_some() {
+                debug!("typing status debounced, skipping update");
+                return Ok(());
+            }
+            self.cache.typing_indicators.insert(key, ()).await;
+        } else {
+            // Always publish stop immediately, remove debounce guard from cache
+            self.cache.typing_indicators.invalidate(&key).await;
+        }
+
+        // Publish to event bus
+        self.event_bus
+            .room
+            .publish(RoomEvent::UserTyping(TypingEvent {
+                user_id,
+                room_id,
+                is_typing,
+                timestamp: Utc::now(),
+            }));
+        debug!("typing status updated");
+
+        Ok(())
     }
 }
 

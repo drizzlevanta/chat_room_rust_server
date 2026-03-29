@@ -109,4 +109,5 @@ impl RoomsSubscription {
             }
         })
     }
+
 }

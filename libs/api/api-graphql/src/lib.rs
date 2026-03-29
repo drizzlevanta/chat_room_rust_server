@@ -5,11 +5,12 @@ pub mod types;
 
 use std::sync::Arc;
 
-use axum::{routing::get, Router};
+use async_graphql_axum::GraphQLSubscription;
+use axum::{Router, routing::get};
 use service::ServiceContainer;
 
 use crate::handler::{graphql_handler, graphql_playground};
-use crate::schema::{build_schema, AppSchema};
+use crate::schema::{AppSchema, build_schema};
 
 /// Build an Axum `Router` with GraphQL playground + query endpoint.
 ///
@@ -28,5 +29,6 @@ pub fn graphql_router(services: Arc<ServiceContainer>) -> Router {
 
     Router::new()
         .route("/", get(graphql_playground).post(graphql_handler))
+        .route_service("/ws", GraphQLSubscription::new(schema.clone()))
         .with_state(schema)
 }

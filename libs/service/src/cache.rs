@@ -23,12 +23,22 @@ pub const LATEST_MESSAGES_CACHE_LIMIT: u64 = 50;
 const IDEMPOTENCY_CACHE_CAPACITY: u64 = 10_000;
 const IDEMPOTENCY_CACHE_TTL_SECS: u64 = 300;
 
+const TYPING_INDICATORS_CACHE_CAPACITY: u64 = 10_000;
+const TYPING_INDICATORS_CACHE_TTL_SECS: u64 = 5; // Typing indicators are very ephemeral, so we use a short TTL to prevent stale data.
+
 /// Compound key for the idempotency cache.
 /// Scoped to a user to prevent collisions.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct IdempotencyKey {
     pub user_id: Uuid,
     pub key: Uuid,
+}
+
+/// Compound key for the typing indicators debounce cache.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TypingIndicatorKey {
+    pub room_id: Uuid,
+    pub user_id: Uuid,
 }
 
 /// Centralized in-memory cache for the chat application.
@@ -56,6 +66,9 @@ pub struct ChatCache {
     pub idempotency_room: Cache<Uuid, Room>,
     /// Idempotency cache for user creation. Keyed by idempotency key.
     pub idempotency_user: Cache<Uuid, User>,
+
+    /// Typing indicator debounce guard, keyed by (room_id, user_id).
+    pub typing_indicators: Cache<TypingIndicatorKey, ()>,
 }
 
 impl ChatCache {
@@ -92,6 +105,10 @@ impl ChatCache {
             idempotency_user: Cache::builder()
                 .max_capacity(IDEMPOTENCY_CACHE_CAPACITY)
                 .time_to_live(Duration::from_secs(IDEMPOTENCY_CACHE_TTL_SECS))
+                .build(),
+            typing_indicators: Cache::builder()
+                .max_capacity(TYPING_INDICATORS_CACHE_CAPACITY)
+                .time_to_live(Duration::from_secs(TYPING_INDICATORS_CACHE_TTL_SECS))
                 .build(),
         }
     }

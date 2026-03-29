@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_graphql::{Context, Object, SimpleObject, Union};
 use service::ServiceContainer;
-use tracing::{error, info, instrument, warn};
+use tracing::{error, info, instrument};
 use uuid::Uuid;
 
 use crate::types::error::{MessageError, MissingIdempotencyKeyError};

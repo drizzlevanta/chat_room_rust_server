@@ -28,12 +28,13 @@ pub struct ServiceContainer {
 impl ServiceContainer {
     pub fn new(db: DatabaseConnection) -> Self {
         let cache = ChatCache::new();
+        let event_bus = EventBus::new();
         Self {
-            room: RoomService::new(db.clone(), cache.clone()),
+            room: RoomService::new(db.clone(), cache.clone(), event_bus.clone()),
             user: UserService::new(db.clone(), cache.clone()),
             message: MessageService::new(db, cache.clone()),
             cache,
-            event_bus: EventBus::new(),
+            event_bus,
         }
     }
 

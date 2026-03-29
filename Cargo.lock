@@ -112,10 +112,12 @@ dependencies = [
  "axum",
  "chrono",
  "domain",
+ "futures-util",
  "sea-orm",
  "service",
  "thiserror 2.0.17",
  "tokio",
+ "tokio-stream",
  "tracing",
  "uuid",
 ]

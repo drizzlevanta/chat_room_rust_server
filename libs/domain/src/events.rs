@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::message::Message;
+use crate::room::Room;
 use crate::user::{Status, User};
 
 /// A typing indicator event — ephemeral, never persisted.
@@ -18,15 +19,15 @@ pub enum UserEvent {
     Added(User),
     Removed(Uuid), // user ID
     StatusChanged { user_id: Uuid, status: Status },
-    Typing(TypingEvent),
 }
 
 #[derive(Clone, Debug)]
 pub enum RoomEvent {
-    Added(Uuid),   // room ID
+    Added(Room),   // room ID
     Removed(Uuid), // room ID
     UserEntered { room_id: Uuid, user_id: Uuid },
     UserLeft { room_id: Uuid, user_id: Uuid },
+    UserTyping(TypingEvent),
 }
 
 #[derive(Clone, Debug)]
@@ -39,7 +40,6 @@ pub enum MessageEvent {
 /// Central enum of all domain events routed through the event bus.
 #[derive(Clone, Debug)]
 pub enum DomainEvent {
-    Typing(TypingEvent),
     MessageSent(Message),
     UserStatusChanged {
         user_id: Uuid,
