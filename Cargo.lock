@@ -481,17 +481,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axum-macros"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57d123550fa8d071b7255cb0cc04dc302baa6c8c4a79f55701552684d8399bce"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.111",
-]
-
-[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -647,19 +636,6 @@ name = "cfg_aliases"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
-
-[[package]]
-name = "chat_room"
-version = "0.1.0"
-dependencies = [
- "async-graphql",
- "chrono",
- "futures-util",
- "thiserror 2.0.17",
- "tokio",
- "tokio-stream",
- "uuid",
-]
 
 [[package]]
 name = "chrono"
@@ -2780,23 +2756,6 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
-]
-
-[[package]]
-name = "server"
-version = "0.1.0"
-dependencies = [
- "async-graphql",
- "async-graphql-axum",
- "axum",
- "axum-macros",
- "chat_room",
- "dotenvy",
- "migration",
- "sea-orm",
- "seeder",
- "tokio",
- "uuid",
 ]
 
 [[package]]

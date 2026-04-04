@@ -1,3 +1,3 @@
 [workspace]
 resolver = "3"
-members = [ "apps/main_server","libs/chat_room", "libs/db/entity", "libs/db/migration", "libs/server", "libs/db/seeder", "libs/service", "libs/domain",  "libs/api/api-graphql", "libs/api/api-rest", "libs/api/api-server"]
+members = [ "apps/main_server","libs/db/entity", "libs/db/migration", "libs/db/seeder", "libs/service", "libs/domain",  "libs/api/api-graphql", "libs/api/api-rest", "libs/api/api-server"]
