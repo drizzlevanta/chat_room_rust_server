@@ -1,12 +1,19 @@
 use std::sync::Arc;
 
-use async_graphql::{Context, Object, SimpleObject, Union};
+use async_graphql::{Context, Object, SimpleObject, Subscription, Union};
+use domain::events::UserEvent;
+use futures_util::{Stream, StreamExt};
 use service::ServiceContainer;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::types::error::{MissingIdempotencyKeyError, UserError};
 use crate::types::idempotency::IdempotencyHeader;
-use crate::types::user::{CreateUserInput, UpdateUserStatusInput, User, UserStatus};
+use crate::types::user::{
+    CreateUserInput, UpdateUserStatusInput, User, UserStatus, UserStatusChanged,
+};
 
 #[derive(Default)]
 pub struct UserQuery;
@@ -100,6 +107,61 @@ impl UserMutation {
             Err(e) => DeleteUserResult::Error(e.into()),
         }
     }
+
+    /// Set user's presence in a room (e.g. when they join or leave).
+    async fn set_presence(
+        &self,
+        ctx: &Context<'_>,
+        room_id: Uuid,
+        user_id: Uuid,
+        is_present: bool,
+    ) -> SetPresenceResult {
+        let services = ctx.data_unchecked::<Arc<ServiceContainer>>();
+        let result = if is_present {
+            services.user.join_room(user_id, room_id).await
+        } else {
+            services.user.leave_room(user_id, room_id).await
+        };
+        match result {
+            Ok(()) => SetPresenceResult::Success(UpdateSuccess { success: true }),
+            Err(e) => SetPresenceResult::Error(e.into()),
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct UserSubscription;
+
+#[Subscription]
+impl UserSubscription {
+    /// Subscribe to user status changes across all users.
+    async fn user_status_changed(
+        &self,
+        ctx: &Context<'_>,
+    ) -> impl Stream<Item = UserStatusChanged> {
+        let rx = ctx
+            .data_unchecked::<Arc<ServiceContainer>>()
+            .event_bus
+            .user
+            .subscribe();
+
+        BroadcastStream::new(rx).filter_map(|event| async move {
+            match event {
+                Ok(UserEvent::StatusChanged { user_id, status }) => Some(UserStatusChanged {
+                    user_id,
+                    status: status.into(),
+                }),
+                Ok(_) => None,
+                Err(BroadcastStreamRecvError::Lagged(n)) => {
+                    warn!(
+                        "user_status_changed subscription lagged, dropped {} events",
+                        n
+                    );
+                    None
+                }
+            }
+        })
+    }
 }
 
 /// Wrapper so `Vec<User>` can be a GraphQL union variant.
@@ -155,6 +217,13 @@ pub enum UpdateUserStatusResult {
 #[derive(Union)]
 pub enum DeleteUserResult {
     Success(DeletedUserId),
+    #[graphql(flatten)]
+    Error(UserError),
+}
+
+#[derive(Union)]
+pub enum SetPresenceResult {
+    Success(UpdateSuccess),
     #[graphql(flatten)]
     Error(UserError),
 }

@@ -1,13 +1,17 @@
 use std::sync::Arc;
 
-use async_graphql::{Context, Object, SimpleObject, Union};
+use async_graphql::{Context, Object, SimpleObject, Subscription, Union};
+use domain::events::MessageEvent;
+use futures_util::{Stream, StreamExt};
 use service::ServiceContainer;
-use tracing::{error, info, instrument};
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
+use tracing::{error, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::types::error::{MessageError, MissingIdempotencyKeyError};
 use crate::types::idempotency::IdempotencyHeader;
-use crate::types::message::{Message, SendMessageInput};
+use crate::types::message::{Message, MessageSentEvent, SendMessageInput};
 use crate::types::pagination::MessagePage;
 
 #[derive(Default)]
@@ -94,6 +98,60 @@ impl MessageMutation {
             Ok(message_id) => DeleteMessageResult::Success(DeleteSuccess { id: message_id }),
             Err(e) => DeleteMessageResult::Error(e.into()),
         }
+    }
+}
+
+#[derive(Default)]
+pub struct MessageSubscription;
+
+#[Subscription]
+impl MessageSubscription {
+    async fn message_sent(
+        &self,
+        ctx: &Context<'_>,
+        room_id: Uuid,
+    ) -> impl Stream<Item = MessageSentEvent> {
+        let rx = ctx
+            .data_unchecked::<Arc<ServiceContainer>>()
+            .event_bus
+            .message
+            .subscribe();
+
+        BroadcastStream::new(rx).filter_map(move |event| async move {
+            match event {
+                Ok(MessageEvent::Sent(msg)) if msg.room == room_id => {
+                    Some(MessageSentEvent::from(msg))
+                }
+                Ok(_) => None,
+                Err(BroadcastStreamRecvError::Lagged(n)) => {
+                    warn!("message_sent subscription lagged, dropped {} messages", n);
+                    None
+                }
+            }
+        })
+    }
+
+    /// Subscribe to message deletions in a room. Yields the deleted message's public ID.
+    async fn message_deleted(&self, ctx: &Context<'_>, room_id: Uuid) -> impl Stream<Item = Uuid> {
+        let rx = ctx
+            .data_unchecked::<Arc<ServiceContainer>>()
+            .event_bus
+            .message
+            .subscribe();
+
+        BroadcastStream::new(rx).filter_map(move |event| async move {
+            match event {
+                Ok(MessageEvent::Deleted {
+                    message_id,
+                    room_id: event_room_id,
+                }) if event_room_id == room_id => Some(message_id),
+                Ok(_) => None,
+                Err(BroadcastStreamRecvError::Lagged(n)) => {
+                    warn!("message_deleted subscription lagged, dropped {} messages", n);
+                    None
+                }
+            }
+        })
     }
 }
 

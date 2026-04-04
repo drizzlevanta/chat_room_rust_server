@@ -57,6 +57,29 @@ impl From<DomainMessage> for Message {
     }
 }
 
+/// Lean payload returned by the `messageSent` subscription.
+/// Intentionally excludes nested resolvers to avoid fanout problem.
+#[derive(SimpleObject, Clone)]
+pub struct MessageSentEvent {
+    pub id: Uuid,
+    pub content: String,
+    pub sender: Uuid,
+    pub room_id: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<DomainMessage> for MessageSentEvent {
+    fn from(m: DomainMessage) -> Self {
+        Self {
+            id: m.id,
+            content: m.content,
+            sender: m.sender,
+            room_id: m.room,
+            created_at: m.created_at,
+        }
+    }
+}
+
 /// GraphQL input for sending a message.
 #[derive(InputObject, Debug)]
 pub struct SendMessageInput {

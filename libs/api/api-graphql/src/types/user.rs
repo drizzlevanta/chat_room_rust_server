@@ -66,3 +66,10 @@ pub struct UpdateUserStatusInput {
     pub user_id: Uuid,
     pub status: UserStatus,
 }
+
+/// GraphQL output type for a user status change event.
+#[derive(SimpleObject, Clone)]
+pub struct UserStatusChanged {
+    pub user_id: Uuid,
+    pub status: UserStatus,
+}

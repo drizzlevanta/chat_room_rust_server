@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use async_graphql::{Context, Object, SimpleObject, Subscription, Union};
 use domain::events::RoomEvent;
+
 use futures_util::{Stream, StreamExt};
 use service::ServiceContainer;
 use tokio_stream::wrappers::BroadcastStream;
@@ -9,7 +10,7 @@ use uuid::Uuid;
 
 use crate::types::error::{MissingIdempotencyKeyError, RoomError};
 use crate::types::idempotency::IdempotencyHeader;
-use crate::types::room::{CreateRoomInput, Room, TypingIndicator};
+use crate::types::room::{CreateRoomInput, Room, TypingIndicator, UserEnteredRoom, UserLeftRoom};
 
 #[derive(Default)]
 pub struct RoomQuery;
@@ -142,6 +143,66 @@ impl RoomSubscription {
                 }
                 Err(e) => {
                     tracing::warn!("user_typing subscription error: {e}");
+                    None
+                }
+                _ => None,
+            }
+        })
+    }
+
+    /// Subscribe to events when a user joins a room.
+    async fn user_entered(
+        &self,
+        ctx: &Context<'_>,
+        room_id: Uuid,
+    ) -> impl Stream<Item = UserEnteredRoom> {
+        let rx = ctx
+            .data_unchecked::<Arc<ServiceContainer>>()
+            .event_bus
+            .room
+            .subscribe();
+
+        BroadcastStream::new(rx).filter_map(move |event| async move {
+            match event {
+                Ok(RoomEvent::UserEntered {
+                    room_id: r,
+                    user_id,
+                }) if r == room_id => Some(UserEnteredRoom {
+                    room_id: r,
+                    user_id,
+                }),
+                Err(e) => {
+                    tracing::warn!("user_entered subscription error: {e}");
+                    None
+                }
+                _ => None,
+            }
+        })
+    }
+
+    /// Subscribe to events when a user leaves a room.
+    async fn user_left(
+        &self,
+        ctx: &Context<'_>,
+        room_id: Uuid,
+    ) -> impl Stream<Item = UserLeftRoom> {
+        let rx = ctx
+            .data_unchecked::<Arc<ServiceContainer>>()
+            .event_bus
+            .room
+            .subscribe();
+
+        BroadcastStream::new(rx).filter_map(move |event| async move {
+            match event {
+                Ok(RoomEvent::UserLeft {
+                    room_id: r,
+                    user_id,
+                }) if r == room_id => Some(UserLeftRoom {
+                    room_id: r,
+                    user_id,
+                }),
+                Err(e) => {
+                    tracing::warn!("user_left subscription error: {e}");
                     None
                 }
                 _ => None,

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use domain::events::MessageEvent;
 use domain::{constants::MAX_MESSAGE_LENGTH, message::Message, pagination::CursorPage};
 use entity::message::Column as MessageColumn;
 use entity::message::Entity as MessageEntity;
@@ -17,6 +18,7 @@ use tracing::{debug, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::cache::{ChatCache, IdempotencyKey, LATEST_MESSAGES_CACHE_LIMIT};
+use crate::event_bus::EventBus;
 use crate::mappers::{EntityToDomain, message_mapper::MessageContext};
 
 /// Service layer for message-related operations. This is where business logic related to messages is implemented, such as validation,
@@ -24,11 +26,16 @@ use crate::mappers::{EntityToDomain, message_mapper::MessageContext};
 pub struct MessageService {
     db: DatabaseConnection,
     cache: ChatCache,
+    event_bus: EventBus,
 }
 
 impl MessageService {
-    pub fn new(db: DatabaseConnection, cache: ChatCache) -> Self {
-        Self { db, cache }
+    pub fn new(db: DatabaseConnection, cache: ChatCache, event_bus: EventBus) -> Self {
+        Self {
+            db,
+            cache,
+            event_bus,
+        }
     }
 
     /// Base query that selects message fields with joined user/room public IDs,
@@ -121,6 +128,10 @@ impl MessageService {
         // Convert to domain message
         let domain_message = message.entity_to_domain(MessageContext { user_id, room_id });
 
+        // Publish event to event bus
+        self.event_bus
+            .message
+            .publish(MessageEvent::Sent(domain_message.clone()));
         Ok(domain_message)
     }
 
@@ -274,6 +285,11 @@ impl MessageService {
 
         // Invalidate the cached first page for this room
         self.cache.invalidate_messages(&room_public_id).await;
+
+        self.event_bus.message.publish(MessageEvent::Deleted {
+            message_id,
+            room_id: room_public_id,
+        });
 
         Ok(message_id)
     }

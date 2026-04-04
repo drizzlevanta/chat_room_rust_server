@@ -44,7 +44,7 @@ pub struct TypingIndicatorKey {
 /// Centralized in-memory cache for the chat application.
 ///
 /// Holds separate moka caches for rooms, users, and messages.
-/// Cheap to clone (internally Arc-wrapped) — share freely across services.
+/// Cheap to clone (internally Arc-wrapped).
 #[derive(Clone)]
 pub struct ChatCache {
     /// Single room by public ID.

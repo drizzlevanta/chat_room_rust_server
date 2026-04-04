@@ -3,9 +3,9 @@ use std::sync::Arc;
 use async_graphql::{MergedObject, MergedSubscription, Schema};
 use service::ServiceContainer;
 
-use crate::resolvers::message_resolver::{MessageMutation, MessageQuery};
+use crate::resolvers::message_resolver::{MessageMutation, MessageQuery, MessageSubscription};
 use crate::resolvers::room_resolver::{RoomMutation, RoomQuery, RoomSubscription};
-use crate::resolvers::user_resolver::{UserMutation, UserQuery};
+use crate::resolvers::user_resolver::{UserMutation, UserQuery, UserSubscription};
 
 /// Root query type merging all domain queries.
 #[derive(MergedObject, Default)]
@@ -17,7 +17,7 @@ pub struct MutationRoot(RoomMutation, UserMutation, MessageMutation);
 
 /// Subscription type merging all domain subscriptions.
 #[derive(MergedSubscription, Default)]
-pub struct SubscriptionRoot(RoomSubscription);
+pub struct SubscriptionRoot(RoomSubscription, MessageSubscription, UserSubscription);
 
 /// The full GraphQL schema type exposed by this crate.
 pub type AppSchema = Schema<QueryRoot, MutationRoot, SubscriptionRoot>;

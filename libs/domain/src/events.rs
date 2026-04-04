@@ -34,16 +34,5 @@ pub enum RoomEvent {
 pub enum MessageEvent {
     Sent(Message),
     Edited(Message),
-    Deleted(Uuid), // message ID
-}
-
-/// Central enum of all domain events routed through the event bus.
-#[derive(Clone, Debug)]
-pub enum DomainEvent {
-    MessageSent(Message),
-    UserStatusChanged {
-        user_id: Uuid,
-        room_id: Option<Uuid>,
-        status: Status,
-    },
+    Deleted { message_id: Uuid, room_id: Uuid },
 }

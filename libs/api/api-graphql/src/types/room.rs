@@ -50,3 +50,17 @@ impl From<TypingEvent> for TypingIndicator {
         }
     }
 }
+
+/// GraphQL output type for a user-entered-room event.
+#[derive(SimpleObject, Clone)]
+pub struct UserEnteredRoom {
+    pub room_id: Uuid,
+    pub user_id: Uuid,
+}
+
+/// GraphQL output type for a user-left-room event.
+#[derive(SimpleObject, Clone)]
+pub struct UserLeftRoom {
+    pub room_id: Uuid,
+    pub user_id: Uuid,
+}

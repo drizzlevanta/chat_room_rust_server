@@ -31,8 +31,8 @@ impl ServiceContainer {
         let event_bus = EventBus::new();
         Self {
             room: RoomService::new(db.clone(), cache.clone(), event_bus.clone()),
-            user: UserService::new(db.clone(), cache.clone()),
-            message: MessageService::new(db, cache.clone()),
+            user: UserService::new(db.clone(), cache.clone(), event_bus.clone()),
+            message: MessageService::new(db, cache.clone(), event_bus.clone()),
             cache,
             event_bus,
         }

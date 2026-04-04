@@ -1,18 +1,21 @@
 use std::sync::Arc;
 
 use crate::cache::ChatCache;
+use crate::event_bus::EventBus;
 use chrono::{DateTime, Utc};
+use domain::events::{RoomEvent, UserEvent};
 use domain::user::{ParseUserStatusError, Status, User as DomainUser};
 use entity::room::Column as RoomColumn;
 use entity::room::Entity as RoomEntity;
 use entity::user::Column as UserColumn;
 use entity::user::Entity as UserEntity;
-use sea_orm::ActiveValue;
-use sea_orm::sea_query::Expr;
+use entity::user::Relation as UserRelation;
+use sea_orm::sea_query::{Expr, Query, SubQueryStatement};
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, FromQueryResult, JoinType,
-    QueryFilter, QuerySelect, RelationTrait, Select,
+    ActiveModelTrait, ColumnTrait, Condition, DatabaseConnection, EntityTrait, FromQueryResult,
+    JoinType, QueryFilter, QuerySelect, RelationTrait, Select,
 };
+use sea_orm::{ActiveValue, PaginatorTrait};
 use thiserror::Error;
 use tracing::error;
 use tracing::{debug, info, instrument, warn};
@@ -25,11 +28,16 @@ use crate::mappers::{TryEntityToDomain, user_mapper::RoomParam};
 pub struct UserService {
     db: DatabaseConnection, // In SeaORM, DatabaseConnection is internally an arc to a connection pool, therefore cheap to clone
     cache: ChatCache,
+    event_bus: EventBus,
 }
 
 impl UserService {
-    pub fn new(db: DatabaseConnection, cache: ChatCache) -> Self {
-        Self { db, cache }
+    pub fn new(db: DatabaseConnection, cache: ChatCache, event_bus: EventBus) -> Self {
+        Self {
+            db,
+            cache,
+            event_bus,
+        }
     }
 
     /// Adds a new user to the system.
@@ -83,10 +91,16 @@ impl UserService {
             ..Default::default()
         };
 
-        let user = user
-            .insert(&self.db)
-            .await
-            .map_err(|_| UserServiceError::UserNotAdded(name.clone()))?;
+        let user = user.insert(&self.db).await.map_err(|e| {
+            if matches!(
+                e.sql_err(),
+                Some(sea_orm::SqlErr::UniqueConstraintViolation(_))
+            ) {
+                UserServiceError::UserAlreadyExists(name.clone())
+            } else {
+                UserServiceError::UserNotAdded(name.clone())
+            }
+        })?;
 
         debug!("inserted into DB");
 
@@ -96,6 +110,11 @@ impl UserService {
         self.cache.users.insert(user.id, user.clone()).await;
         if let Some(room_id) = room {
             self.cache.users_in_room.invalidate(&room_id).await;
+            // Publish user joined event to event bus if the user was associated with a room
+            self.event_bus.room.publish(RoomEvent::UserEntered {
+                room_id,
+                user_id: user.id,
+            });
         }
         debug!("user cached");
 
@@ -196,6 +215,12 @@ impl UserService {
         }
 
         self.cache.users.invalidate(&user_id).await;
+
+        self.event_bus.user.publish(UserEvent::StatusChanged {
+            user_id,
+            status: new_status,
+        });
+
         info!("user status updated");
 
         Ok(())
@@ -248,6 +273,101 @@ impl UserService {
         let domain_users = user_rows.into_iter().map(DomainUser::from).collect();
         Ok(domain_users)
     }
+
+    /// User leaves their current room (if any). Sets user's room to null
+    #[instrument(skip(self), name = "UserService::leave_room", err)]
+    pub async fn leave_room(&self, user_id: Uuid, room_id: Uuid) -> Result<(), UserServiceError> {
+        // Set user's room to null
+        let result = UserEntity::update_many()
+            .col_expr(UserColumn::Room, Expr::value(None as Option<Uuid>))
+            .filter(UserColumn::PublicId.eq(user_id))
+            .exec(&self.db)
+            .await?;
+
+        if result.rows_affected == 0 {
+            warn!("user not found for leave_room");
+            return Err(UserServiceError::UserNotFound(user_id));
+        }
+
+        // Invalidate the user's cache entry since their room association has changed
+        self.cache.users.invalidate(&user_id).await;
+
+        // Invalidate users_in_room cache for the room they left
+        self.cache.users_in_room.invalidate(&room_id).await;
+
+        // Publish user left event to event bus
+        self.event_bus
+            .room
+            .publish(RoomEvent::UserLeft { room_id, user_id });
+        Ok(())
+    }
+
+    /// User joins a room. Sets user's room to the specified room id.
+    /// If the room does not exist, returns an error.
+    #[instrument(skip(self), name = "UserService::join_room", err)]
+    pub async fn join_room(&self, user_id: Uuid, room_id: Uuid) -> Result<(), UserServiceError> {
+        // Single query: SET room = (SELECT id FROM room WHERE public_id = room_id)
+        // WHERE public_id = user_id AND EXISTS (SELECT ... room WHERE public_id = room_id)
+        // Resolves the internal integer FK and validates room existence atomically.
+        let room_id_subquery = || {
+            Query::select()
+                .column(RoomColumn::Id)
+                .from(RoomEntity)
+                .and_where(RoomColumn::PublicId.eq(room_id))
+                .to_owned()
+        };
+
+        let result = UserEntity::update_many()
+            .col_expr(
+                UserColumn::Room,
+                Expr::SubQuery(
+                    None,
+                    Box::new(SubQueryStatement::SelectStatement(room_id_subquery())),
+                ),
+            )
+            .filter(UserColumn::PublicId.eq(user_id))
+            .filter(Expr::exists(room_id_subquery())) // Ensure the room exists, otherwise no rows will be updated
+            .filter(
+                // Skip the update if the user is already in this room (idempotency)
+                Condition::any()
+                    .add(UserColumn::Room.is_null())
+                    .add(UserColumn::Room.not_in_subquery(room_id_subquery())),
+            )
+            .exec(&self.db)
+            .await?;
+
+        if result.rows_affected == 0 {
+            // Could be: already in room (idempotent, not an error) or user/room not found.
+            let already_in_room = UserEntity::find()
+                .join(JoinType::InnerJoin, UserRelation::Room.def())
+                .filter(UserColumn::PublicId.eq(user_id))
+                .filter(RoomColumn::PublicId.eq(room_id))
+                .count(&self.db)
+                .await?
+                > 0;
+
+            if already_in_room {
+                debug!("join_room: user is already in room, no-op");
+                return Ok(());
+            }
+
+            warn!("join_room failed: user or room not found");
+            return Err(UserServiceError::RoomOrUserNotFound { user_id, room_id });
+        }
+
+        // Invalidate the user's cache entry since their room association has changed
+        self.cache.users.invalidate(&user_id).await;
+
+        // Invalidate users_in_room cache for the room they joined
+        self.cache.users_in_room.invalidate(&room_id).await;
+
+        // Publish user joined event to event bus
+        self.event_bus
+            .room
+            .publish(RoomEvent::UserEntered { room_id, user_id });
+
+        Ok(())
+    }
 }
 
 /// Errors that can occur in UserService operations.
@@ -261,6 +381,9 @@ pub enum UserServiceError {
 
     #[error("Room not found with id: {0}")]
     RoomNotFound(Uuid),
+
+    #[error("User {user_id} or room {room_id} not found")]
+    RoomOrUserNotFound { user_id: Uuid, room_id: Uuid },
 
     #[error("Failed to update user status to: {0}")]
     UserStatusUpdateFailed(String),

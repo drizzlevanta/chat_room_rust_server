@@ -131,6 +131,13 @@ pub struct UserStatusUpdateFailedError {
 }
 
 #[derive(SimpleObject, Debug, Clone)]
+pub struct UserOrRoomNotFoundError {
+    pub message: String,
+    pub user_id: Uuid,
+    pub room_id: Uuid,
+}
+
+#[derive(SimpleObject, Debug, Clone)]
 pub struct InvalidStatusError {
     pub message: String,
 }
@@ -144,6 +151,7 @@ pub enum UserError {
     UserStatusUpdateFailed(UserStatusUpdateFailedError),
     InvalidStatus(InvalidStatusError),
     MissingIdempotencyKey(MissingIdempotencyKeyError),
+    UserOrRoomNotFound(UserOrRoomNotFoundError),
     InternalError(InternalError),
 }
 
@@ -247,7 +255,14 @@ impl From<UserServiceError> for UserError {
             UserServiceError::UserStatusUpdateFailed(ref reason) => {
                 error!(reason = %reason, "failed to update user status");
                 Self::UserStatusUpdateFailed(UserStatusUpdateFailedError {
-                    message: "Failed to update user status".into(),
+                    message: err.to_string(),
+                })
+            }
+            UserServiceError::RoomOrUserNotFound { user_id, room_id } => {
+                Self::UserOrRoomNotFound(UserOrRoomNotFoundError {
+                    message: err.to_string(),
+                    user_id,
+                    room_id,
                 })
             }
             UserServiceError::DatabaseError(ref inner) => {
