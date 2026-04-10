@@ -1,4 +1,4 @@
-pub mod constants;
+pub mod config;
 pub mod events;
 pub mod message;
 pub mod pagination;

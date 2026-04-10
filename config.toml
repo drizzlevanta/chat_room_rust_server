@@ -1,0 +1,60 @@
+# Chat Room Server Configuration
+#
+# All values below are the compiled-in defaults. Uncomment and change any
+# value you want to override. The server loads this file on startup — no
+# recompilation needed.
+#
+# To use a different path, set the CONFIG_PATH environment variable.
+
+# ── Cache ─────────────────────────────────────────────────────────────
+
+[cache.room]
+capacity   = 500      # max rooms cached by ID
+ttl_secs   = 300      # 5 minutes
+
+[cache.all_rooms]
+capacity   = 1        # single "all rooms" list
+ttl_secs   = 120      # 2 minutes
+
+[cache.user]
+capacity   = 5000     # max users cached by ID
+ttl_secs   = 120      # 2 minutes
+
+[cache.users_in_room]
+capacity   = 500      # max room→user-list entries
+ttl_secs   = 60       # 1 minute
+
+[cache.latest_messages]
+capacity   = 500      # max room→message-page entries
+ttl_secs   = 30       # 30 seconds
+limit      = 50       # messages per cached page (requests above this bypass cache)
+
+[cache.idempotency]
+capacity   = 10000    # max idempotency keys tracked
+ttl_secs   = 300      # 5 minutes
+
+[cache.typing_indicators]
+capacity   = 10000    # max typing-indicator debounce entries
+ttl_secs   = 5        # 5 seconds (very ephemeral)
+
+[cache.rate_limit]
+capacity     = 100000   # max per-user rate-limit counter entries
+window_secs  = 10       # rate-limit window duration in seconds
+max_requests = 5        # max write operations per window per user
+
+# ── Event Bus ─────────────────────────────────────────────────────────
+
+[event_bus]
+default_capacity = 1024   # broadcast channel capacity for user & room events
+message_capacity = 2048   # broadcast channel capacity for message events
+
+# ── Message ───────────────────────────────────────────────────────────
+
+[message]
+max_length = 2000     # maximum message length in characters
+
+# ── Room ──────────────────────────────────────────────────────────────
+
+[room]
+default_capacity = 100    # default room capacity when not specified
+max_capacity     = 1000   # hard upper limit for room capacity

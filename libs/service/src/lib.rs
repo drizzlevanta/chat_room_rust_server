@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use domain::config::AppConfig;
 use sea_orm::DatabaseConnection;
 
 pub mod cache;
@@ -23,23 +24,25 @@ pub struct ServiceContainer {
     pub message: MessageService,
     pub cache: ChatCache,
     pub event_bus: EventBus,
+    pub config: Arc<AppConfig>,
 }
 
 impl ServiceContainer {
-    pub fn new(db: DatabaseConnection) -> Self {
-        let cache = ChatCache::new();
-        let event_bus = EventBus::new();
+    pub fn new(db: DatabaseConnection, config: Arc<AppConfig>) -> Self {
+        let cache = ChatCache::new(&config.cache);
+        let event_bus = EventBus::new(&config.event_bus);
         Self {
-            room: RoomService::new(db.clone(), cache.clone(), event_bus.clone()),
+            room: RoomService::new(db.clone(), cache.clone(), event_bus.clone(), config.clone()),
             user: UserService::new(db.clone(), cache.clone(), event_bus.clone()),
-            message: MessageService::new(db, cache.clone(), event_bus.clone()),
+            message: MessageService::new(db, cache.clone(), event_bus.clone(), config.clone()),
             cache,
             event_bus,
+            config,
         }
     }
 
     /// Convenience: create and wrap in Arc in one call.
-    pub fn new_shared(db: DatabaseConnection) -> Arc<Self> {
-        Arc::new(Self::new(db))
+    pub fn new_shared(db: DatabaseConnection, config: Arc<AppConfig>) -> Arc<Self> {
+        Arc::new(Self::new(db, config))
     }
 }

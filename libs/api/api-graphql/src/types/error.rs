@@ -1,6 +1,4 @@
 use async_graphql::{SimpleObject, Union};
-use domain::constants::MAX_MESSAGE_LENGTH;
-use service::cache::RATE_LIMIT_MAX_REQUESTS;
 use service::message_service::MessageServiceError;
 use service::room_service::RoomServiceError;
 use service::user_service::UserServiceError;
@@ -177,10 +175,12 @@ pub enum UserError {
 impl From<MessageServiceError> for MessageError {
     fn from(err: MessageServiceError) -> Self {
         match err {
-            MessageServiceError::MessageTooLong => Self::MessageTooLong(MessageTooLongError {
-                message: err.to_string(),
-                max_length: MAX_MESSAGE_LENGTH,
-            }),
+            MessageServiceError::MessageTooLong(max) => {
+                Self::MessageTooLong(MessageTooLongError {
+                    message: err.to_string(),
+                    max_length: max,
+                })
+            }
             MessageServiceError::UserNotFoundInRoom { user_id, room_id } => {
                 Self::UserNotFoundInRoom(UserNotFoundInRoomError {
                     message: err.to_string(),
@@ -198,9 +198,9 @@ impl From<MessageServiceError> for MessageError {
                     message_id: id,
                 })
             }
-            MessageServiceError::RateLimited => Self::RateLimited(RateLimitedError {
+            MessageServiceError::RateLimited(max) => Self::RateLimited(RateLimitedError {
                 message: err.to_string(),
-                max_requests: RATE_LIMIT_MAX_REQUESTS,
+                max_requests: max,
             }),
             MessageServiceError::DatabaseError(ref inner) => {
                 error!(error = %inner, "database error in message service");
