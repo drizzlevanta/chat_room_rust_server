@@ -1,3 +1,5 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use domain::message::Message;
@@ -25,6 +27,11 @@ const IDEMPOTENCY_CACHE_TTL_SECS: u64 = 300;
 
 const TYPING_INDICATORS_CACHE_CAPACITY: u64 = 10_000;
 const TYPING_INDICATORS_CACHE_TTL_SECS: u64 = 5; // Typing indicators are very ephemeral, so we use a short TTL to prevent stale data.
+
+const RATE_LIMIT_CACHE_CAPACITY: u64 = 100_000;
+const RATE_LIMIT_WINDOW_SECS: u64 = 10;
+/// Maximum number of write operations a single user can perform per rate-limit window.
+pub const RATE_LIMIT_MAX_REQUESTS: u32 = 5;
 
 /// Compound key for the idempotency cache.
 /// Scoped to a user to prevent collisions.
@@ -69,6 +76,10 @@ pub struct ChatCache {
 
     /// Typing indicator debounce guard, keyed by (room_id, user_id).
     pub typing_indicators: Cache<TypingIndicatorKey, ()>,
+
+    /// Per-user rate-limit counters. Each entry holds an atomic request count
+    /// that expires after `RATE_LIMIT_WINDOW_SECS`.
+    pub rate_limits: Cache<Uuid, Arc<AtomicU32>>,
 }
 
 impl ChatCache {
@@ -110,6 +121,10 @@ impl ChatCache {
                 .max_capacity(TYPING_INDICATORS_CACHE_CAPACITY)
                 .time_to_live(Duration::from_secs(TYPING_INDICATORS_CACHE_TTL_SECS))
                 .build(),
+            rate_limits: Cache::builder()
+                .max_capacity(RATE_LIMIT_CACHE_CAPACITY)
+                .time_to_live(Duration::from_secs(RATE_LIMIT_WINDOW_SECS))
+                .build(),
         }
     }
 
@@ -136,5 +151,23 @@ impl ChatCache {
     /// Invalidate message caches for a room.
     pub async fn invalidate_messages(&self, room_id: &Uuid) {
         self.latest_messages.invalidate(room_id).await;
+    }
+
+    /// Check whether a user has exceeded the per-window rate limit.
+    ///
+    /// Returns `Ok(())` if the request is allowed, or `Err(())` if the user
+    /// has hit the maximum number of requests for the current window.
+    pub async fn check_rate_limit(&self, user_id: Uuid) -> Result<(), ()> {
+        let counter = self
+            .rate_limits
+            .get_with(user_id, async { Arc::new(AtomicU32::new(0)) })
+            .await;
+        // Atomically increment the counter, returns the previous value and check if it exceeds the limit.
+        let prev = counter.fetch_add(1, Ordering::Relaxed);
+        if prev >= RATE_LIMIT_MAX_REQUESTS {
+            Err(())
+        } else {
+            Ok(())
+        }
     }
 }

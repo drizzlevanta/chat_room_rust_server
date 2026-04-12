@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::types::error::{MessageError, MissingIdempotencyKeyError};
 use crate::types::idempotency::IdempotencyHeader;
-use crate::types::message::{Message, MessageSentEvent, SendMessageInput};
+use crate::types::message::{EditMessageInput, Message, MessageEditedEvent, MessageSentEvent, SendMessageInput};
 use crate::types::pagination::MessagePage;
 
 #[derive(Default)]
@@ -91,6 +91,15 @@ impl MessageMutation {
         }
     }
 
+    /// Edit the content of an existing message.
+    async fn edit_message(&self, ctx: &Context<'_>, input: EditMessageInput) -> EditMessageResult {
+        let services = ctx.data_unchecked::<Arc<ServiceContainer>>();
+        match services.message.edit_message(input.id, &input.content).await {
+            Ok(msg) => EditMessageResult::Message(Message::from(msg)),
+            Err(e) => EditMessageResult::Error(e.into()),
+        }
+    }
+
     /// Delete a message by its public ID.
     async fn delete_message(&self, ctx: &Context<'_>, id: Uuid) -> DeleteMessageResult {
         let services = ctx.data_unchecked::<Arc<ServiceContainer>>();
@@ -125,6 +134,32 @@ impl MessageSubscription {
                 Ok(_) => None,
                 Err(BroadcastStreamRecvError::Lagged(n)) => {
                     warn!("message_sent subscription lagged, dropped {} messages", n);
+                    None
+                }
+            }
+        })
+    }
+
+    /// Subscribe to message edits in a room.
+    async fn message_edited(
+        &self,
+        ctx: &Context<'_>,
+        room_id: Uuid,
+    ) -> impl Stream<Item = MessageEditedEvent> {
+        let rx = ctx
+            .data_unchecked::<Arc<ServiceContainer>>()
+            .event_bus
+            .message
+            .subscribe();
+
+        BroadcastStream::new(rx).filter_map(move |event| async move {
+            match event {
+                Ok(MessageEvent::Edited(msg)) if msg.room == room_id => {
+                    Some(MessageEditedEvent::from(msg))
+                }
+                Ok(_) => None,
+                Err(BroadcastStreamRecvError::Lagged(n)) => {
+                    warn!("message_edited subscription lagged, dropped {} messages", n);
                     None
                 }
             }
@@ -197,6 +232,14 @@ pub enum SendMessageResult {
 #[derive(Union)]
 pub enum DeleteMessageResult {
     Success(DeleteSuccess),
+    #[graphql(flatten)]
+    Error(MessageError),
+}
+
+/// Result union for the edit-message mutation.
+#[derive(Union)]
+pub enum EditMessageResult {
+    Message(Message),
     #[graphql(flatten)]
     Error(MessageError),
 }

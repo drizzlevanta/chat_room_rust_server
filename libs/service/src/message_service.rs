@@ -17,7 +17,7 @@ use thiserror::Error;
 use tracing::{debug, info, instrument, warn};
 use uuid::Uuid;
 
-use crate::cache::{ChatCache, IdempotencyKey, LATEST_MESSAGES_CACHE_LIMIT};
+use crate::cache::{ChatCache, IdempotencyKey, LATEST_MESSAGES_CACHE_LIMIT, RATE_LIMIT_MAX_REQUESTS};
 use crate::event_bus::EventBus;
 use crate::mappers::{EntityToDomain, message_mapper::MessageContext};
 
@@ -67,6 +67,12 @@ impl MessageService {
         room_id: Uuid,
         idempotency_key: Uuid,
     ) -> Result<Message, MessageServiceError> {
+        // Rate limit check — reject early before any DB or cache work
+        self.cache
+            .check_rate_limit(user_id)
+            .await
+            .map_err(|()| MessageServiceError::RateLimited)?;
+
         // Check idempotency cache first — return cached message on retry
         let cache_key = IdempotencyKey {
             user_id,
@@ -263,6 +269,64 @@ impl MessageService {
         })
     }
 
+    /// Edit the content of an existing message.
+    #[instrument(skip(self), name = "MessageService::edit_message", err)]
+    pub async fn edit_message(
+        &self,
+        message_id: Uuid,
+        new_content: &str,
+    ) -> Result<Message, MessageServiceError> {
+        let char_count = new_content.chars().count();
+        if char_count > MAX_MESSAGE_LENGTH {
+            warn!(
+                length = char_count,
+                max = MAX_MESSAGE_LENGTH,
+                "edited message too long"
+            );
+            return Err(MessageServiceError::MessageTooLong);
+        }
+
+        // Single query: fetch all fields needed to build the domain message and
+        // to perform the update.
+        let (msg_internal_id, created_at, sender_public_id, room_public_id) = MessageEntity::find()
+            .select_only()
+            .column(MessageColumn::Id)
+            .column(MessageColumn::CreatedAt)
+            .column_as(UserColumn::PublicId, "sender_public_id")
+            .column_as(RoomColumn::PublicId, "room_public_id")
+            .join(JoinType::InnerJoin, entity::message::Relation::User.def())
+            .join(JoinType::InnerJoin, entity::message::Relation::Room.def())
+            .filter(MessageColumn::PublicId.eq(message_id))
+            .into_tuple::<(i32, DateTime<Utc>, Uuid, Uuid)>()
+            .one(&self.db)
+            .await?
+            .ok_or(MessageServiceError::MessageNotFound(message_id))?;
+
+        entity::message::ActiveModel {
+            id: Set(msg_internal_id),
+            content: Set(new_content.to_string()),
+            ..Default::default()
+        }
+        .update(&self.db)
+        .await?;
+
+        self.cache.invalidate_messages(&room_public_id).await;
+
+        let updated = Message {
+            id: message_id,
+            created_at,
+            content: new_content.to_string(),
+            sender: sender_public_id,
+            room: room_public_id,
+        };
+
+        self.event_bus
+            .message
+            .publish(MessageEvent::Edited(updated.clone()));
+
+        Ok(updated)
+    }
+
     /// Delete a message by its public id
     #[instrument(skip(self), name = "MessageService::delete_message", err)]
     pub async fn delete_message(&self, message_id: Uuid) -> Result<Uuid, MessageServiceError> {
@@ -300,6 +364,9 @@ impl MessageService {
 pub enum MessageServiceError {
     #[error("Message too long. Maximum length is {MAX_MESSAGE_LENGTH} characters.")]
     MessageTooLong,
+
+    #[error("Rate limit exceeded. Maximum {RATE_LIMIT_MAX_REQUESTS} requests per window.")]
+    RateLimited,
 
     #[error("User with id {user_id} not found in room with id {room_id}")]
     UserNotFoundInRoom { user_id: Uuid, room_id: Uuid },

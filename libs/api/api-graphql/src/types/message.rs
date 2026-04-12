@@ -89,3 +89,33 @@ pub struct SendMessageInput {
     /// Public ID of the room.
     pub room: Uuid,
 }
+
+/// GraphQL input for editing a message.
+#[derive(InputObject, Debug)]
+pub struct EditMessageInput {
+    /// Public ID of the message to edit.
+    pub id: Uuid,
+    pub content: String,
+}
+
+/// Lean payload returned by the `messageEdited` subscription.
+#[derive(SimpleObject, Clone)]
+pub struct MessageEditedEvent {
+    pub id: Uuid,
+    pub content: String,
+    pub sender: Uuid,
+    pub room_id: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<DomainMessage> for MessageEditedEvent {
+    fn from(m: DomainMessage) -> Self {
+        Self {
+            id: m.id,
+            content: m.content,
+            sender: m.sender,
+            room_id: m.room,
+            created_at: m.created_at,
+        }
+    }
+}

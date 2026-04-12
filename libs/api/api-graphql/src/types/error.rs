@@ -1,5 +1,6 @@
 use async_graphql::{SimpleObject, Union};
 use domain::constants::MAX_MESSAGE_LENGTH;
+use service::cache::RATE_LIMIT_MAX_REQUESTS;
 use service::message_service::MessageServiceError;
 use service::room_service::RoomServiceError;
 use service::user_service::UserServiceError;
@@ -69,12 +70,19 @@ pub struct MessageNotFoundError {
     pub message_id: Uuid,
 }
 
+#[derive(SimpleObject, Debug, Clone)]
+pub struct RateLimitedError {
+    pub message: String,
+    pub max_requests: u32,
+}
+
 #[derive(Union, Debug)]
 pub enum MessageError {
     MessageTooLong(MessageTooLongError),
     UserNotFoundInRoom(UserNotFoundInRoomError),
     RoomNotFound(RoomNotFoundError),
     MessageNotFound(MessageNotFoundError),
+    RateLimited(RateLimitedError),
     MissingIdempotencyKey(MissingIdempotencyKeyError),
     InternalError(InternalError),
 }
@@ -190,6 +198,10 @@ impl From<MessageServiceError> for MessageError {
                     message_id: id,
                 })
             }
+            MessageServiceError::RateLimited => Self::RateLimited(RateLimitedError {
+                message: err.to_string(),
+                max_requests: RATE_LIMIT_MAX_REQUESTS,
+            }),
             MessageServiceError::DatabaseError(ref inner) => {
                 error!(error = %inner, "database error in message service");
                 Self::InternalError(InternalError::new())
