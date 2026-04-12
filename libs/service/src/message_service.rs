@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use domain::config::AppConfig;
 use domain::events::MessageEvent;
-use domain::{constants::MAX_MESSAGE_LENGTH, message::Message, pagination::CursorPage};
+use domain::{message::Message, pagination::CursorPage};
 use entity::message::Column as MessageColumn;
 use entity::message::Entity as MessageEntity;
 use entity::room::Column as RoomColumn;
@@ -17,7 +18,7 @@ use thiserror::Error;
 use tracing::{debug, info, instrument, warn};
 use uuid::Uuid;
 
-use crate::cache::{ChatCache, IdempotencyKey, LATEST_MESSAGES_CACHE_LIMIT, RATE_LIMIT_MAX_REQUESTS};
+use crate::cache::{ChatCache, IdempotencyKey};
 use crate::event_bus::EventBus;
 use crate::mappers::{EntityToDomain, message_mapper::MessageContext};
 
@@ -27,14 +28,21 @@ pub struct MessageService {
     db: DatabaseConnection,
     cache: ChatCache,
     event_bus: EventBus,
+    config: Arc<AppConfig>,
 }
 
 impl MessageService {
-    pub fn new(db: DatabaseConnection, cache: ChatCache, event_bus: EventBus) -> Self {
+    pub fn new(
+        db: DatabaseConnection,
+        cache: ChatCache,
+        event_bus: EventBus,
+        config: Arc<AppConfig>,
+    ) -> Self {
         Self {
             db,
             cache,
             event_bus,
+            config,
         }
     }
 
@@ -71,7 +79,7 @@ impl MessageService {
         self.cache
             .check_rate_limit(user_id)
             .await
-            .map_err(|()| MessageServiceError::RateLimited)?;
+            .map_err(|()| MessageServiceError::RateLimited(self.cache.rate_limit_max_requests))?;
 
         // Check idempotency cache first — return cached message on retry
         let cache_key = IdempotencyKey {
@@ -95,13 +103,13 @@ impl MessageService {
     ) -> Result<Message, MessageServiceError> {
         // Validate message length, counting by characters
         let char_count = content.chars().count();
-        if char_count > MAX_MESSAGE_LENGTH {
+        if char_count > self.config.message.max_length {
             warn!(
                 length = char_count,
-                max = MAX_MESSAGE_LENGTH,
+                max = self.config.message.max_length,
                 "message too long"
             );
-            return Err(MessageServiceError::MessageTooLong);
+            return Err(MessageServiceError::MessageTooLong(self.config.message.max_length));
         }
 
         // Check if user exists in the room (single query with join)
@@ -186,8 +194,9 @@ impl MessageService {
         cursor: Option<Uuid>,
         limit: u64,
     ) -> Result<CursorPage<Message>, MessageServiceError> {
+        let cache_limit = self.cache.latest_messages_cache_limit;
         // For small limits and first page, try the cache first
-        if limit <= LATEST_MESSAGES_CACHE_LIMIT && cursor.is_none() {
+        if limit <= cache_limit && cursor.is_none() {
             debug!("checking cache for latest messages");
             // Try cache first, if not found, query the database to populate the full page, then slice
             let cached_page = self
@@ -195,7 +204,7 @@ impl MessageService {
                 .latest_messages
                 .try_get_with(
                     room_id,
-                    self.get_messages_in_room_inner(room_id, None, LATEST_MESSAGES_CACHE_LIMIT),
+                    self.get_messages_in_room_inner(room_id, None, cache_limit),
                 )
                 .await
                 .map_err(|e: Arc<MessageServiceError>| Arc::unwrap_or_clone(e))?;
@@ -277,13 +286,13 @@ impl MessageService {
         new_content: &str,
     ) -> Result<Message, MessageServiceError> {
         let char_count = new_content.chars().count();
-        if char_count > MAX_MESSAGE_LENGTH {
+        if char_count > self.config.message.max_length {
             warn!(
                 length = char_count,
-                max = MAX_MESSAGE_LENGTH,
+                max = self.config.message.max_length,
                 "edited message too long"
             );
-            return Err(MessageServiceError::MessageTooLong);
+            return Err(MessageServiceError::MessageTooLong(self.config.message.max_length));
         }
 
         // Single query: fetch all fields needed to build the domain message and
@@ -362,11 +371,11 @@ impl MessageService {
 /// Errors that can occur in MessageService operations.
 #[derive(Error, Debug, Clone)]
 pub enum MessageServiceError {
-    #[error("Message too long. Maximum length is {MAX_MESSAGE_LENGTH} characters.")]
-    MessageTooLong,
+    #[error("Message too long. Maximum length is {0} characters.")]
+    MessageTooLong(usize),
 
-    #[error("Rate limit exceeded. Maximum {RATE_LIMIT_MAX_REQUESTS} requests per window.")]
-    RateLimited,
+    #[error("Rate limit exceeded. Maximum {0} requests per window.")]
+    RateLimited(u32),
 
     #[error("User with id {user_id} not found in room with id {room_id}")]
     UserNotFoundInRoom { user_id: Uuid, room_id: Uuid },

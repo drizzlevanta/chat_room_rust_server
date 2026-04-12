@@ -1,12 +1,37 @@
 use std::env;
+use std::path::Path;
+use std::sync::Arc;
 
 use axum::Router;
+use domain::config::AppConfig;
 use migration::{Migrator, MigratorTrait};
 use sea_orm::Database;
 use service::ServiceContainer;
 use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+
+/// Load application configuration.
+///
+/// Resolution order:
+/// 1. If the `CONFIG_PATH` env var is set, read that file.
+/// 2. Otherwise, if `config.toml` exists in the working directory, read it.
+/// 3. Otherwise, fall back to compiled-in defaults.
+fn load_config() -> AppConfig {
+    let path = env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());
+
+    if Path::new(&path).exists() {
+        let content =
+            std::fs::read_to_string(&path).expect("failed to read config file");
+        let config: AppConfig =
+            toml::from_str(&content).expect("failed to parse config file");
+        info!(path = %path, "loaded configuration from file");
+        config
+    } else {
+        info!("no config file found, using defaults");
+        AppConfig::default()
+    }
+}
 
 /// Start the Axum server that composes all API layers (GraphQL, REST, etc.).
 ///
@@ -25,6 +50,9 @@ pub async fn start_server() {
         )
         .init();
 
+    // ── Configuration ────────────────────────────────────────────────
+    let config = Arc::new(load_config());
+
     // ── Database ──────────────────────────────────────────────────────
     let db_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     info!("Connecting to database at {db_url}");
@@ -38,7 +66,7 @@ pub async fn start_server() {
 
     // ── Services ─────────────────────────────────────────────────────
     // Instantiate the shared service container that will be passed to all API layers.
-    let services = ServiceContainer::new_shared(db);
+    let services = ServiceContainer::new_shared(db, config);
 
     // ── Router ───────────────────────────────────────────────────────
     // GraphQL endpoint

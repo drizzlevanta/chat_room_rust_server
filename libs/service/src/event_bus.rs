@@ -1,8 +1,6 @@
+use domain::config::EventBusConfig;
 use domain::events::{MessageEvent, RoomEvent, UserEvent};
 use tokio::sync::broadcast;
-
-const DEFAULT_CAPACITY: usize = 1024;
-const DEFAULT_MESSAGE_CAPACITY: usize = 2048;
 
 /// A typed broadcast channel. Cheap to clone (internally Arc-wrapped).
 #[derive(Clone)]
@@ -42,11 +40,11 @@ pub struct EventBus {
 }
 
 impl EventBus {
-    pub fn new() -> Self {
+    pub fn new(config: &EventBusConfig) -> Self {
         Self {
-            user: Channel::new(DEFAULT_CAPACITY),
-            room: Channel::new(DEFAULT_CAPACITY),
-            message: Channel::new(DEFAULT_MESSAGE_CAPACITY),
+            user: Channel::new(config.default_capacity),
+            room: Channel::new(config.default_capacity),
+            message: Channel::new(config.message_capacity),
         }
     }
 }

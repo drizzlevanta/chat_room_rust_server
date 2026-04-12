@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use domain::constants::{DEFAULT_ROOM_CAPACITY, MAX_ROOM_CAPACITY};
+use domain::config::AppConfig;
 use domain::events::{RoomEvent, TypingEvent};
 use domain::room::Room as DomainRoom;
 use entity::room::Column as RoomColumn;
@@ -23,14 +23,21 @@ pub struct RoomService {
     db: DatabaseConnection,
     cache: ChatCache,
     event_bus: EventBus,
+    config: Arc<AppConfig>,
 }
 
 impl RoomService {
-    pub fn new(db: DatabaseConnection, cache: ChatCache, event_bus: EventBus) -> Self {
+    pub fn new(
+        db: DatabaseConnection,
+        cache: ChatCache,
+        event_bus: EventBus,
+        config: Arc<AppConfig>,
+    ) -> Self {
         Self {
             db,
             cache,
             event_bus,
+            config,
         }
     }
 
@@ -66,15 +73,15 @@ impl RoomService {
     ) -> Result<DomainRoom, RoomServiceError> {
         // Validate capacity. This should be done at the service layer since we might have multiple entry points (e.g. REST API, GraphQL, CLI) that can create rooms.
         if let Some(cap) = capacity {
-            if cap > MAX_ROOM_CAPACITY {
-                warn!(cap, max = MAX_ROOM_CAPACITY, "capacity exceeded");
+            if cap > self.config.room.max_capacity {
+                warn!(cap, max = self.config.room.max_capacity, "capacity exceeded");
                 return Err(RoomServiceError::MaxCapacityExceeded(cap));
             }
         }
 
         let room = entity::room::ActiveModel {
             name: Set(name),
-            capacity: Set(capacity.unwrap_or(DEFAULT_ROOM_CAPACITY) as i32),
+            capacity: Set(capacity.unwrap_or(self.config.room.default_capacity) as i32),
             description: Set(None),
             ..Default::default()
         };
@@ -159,8 +166,8 @@ impl RoomService {
         }
 
         if let Some(cap) = capacity {
-            if cap > MAX_ROOM_CAPACITY {
-                warn!(cap, max = MAX_ROOM_CAPACITY, "capacity exceeded");
+            if cap > self.config.room.max_capacity {
+                warn!(cap, max = self.config.room.max_capacity, "capacity exceeded");
                 return Err(RoomServiceError::MaxCapacityExceeded(cap));
             }
         }

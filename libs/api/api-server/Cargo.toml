@@ -6,11 +6,13 @@ edition = "2024"
 [dependencies]
 api-graphql = { path = "../api-graphql" }
 # api-rest = { path = "../api-rest" }  # Uncomment when api-rest exposes a router
+domain = { path = "../../domain" }
 service = { path = "../../service" }
 migration = { path = "../../db/migration" }
 axum = "0.8.1"
 tokio = { version = "1.42.0", features = ["full"] }
 sea-orm = { version = "2.0.0-rc", features = ["sqlx-sqlite", "runtime-tokio-native-tls"] }
 dotenvy = "0.15.7"
+toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
