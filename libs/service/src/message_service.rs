@@ -76,10 +76,11 @@ impl MessageService {
         idempotency_key: Uuid,
     ) -> Result<Message, MessageServiceError> {
         // Rate limit check — reject early before any DB or cache work
+        let max_requests = self.config.cache.rate_limit.max_requests;
         self.cache
-            .check_rate_limit(user_id)
+            .check_rate_limit(user_id, max_requests)
             .await
-            .map_err(|()| MessageServiceError::RateLimited(self.cache.rate_limit_max_requests))?;
+            .map_err(|()| MessageServiceError::RateLimited(max_requests))?;
 
         // Check idempotency cache first — return cached message on retry
         let cache_key = IdempotencyKey {
@@ -194,7 +195,7 @@ impl MessageService {
         cursor: Option<Uuid>,
         limit: u64,
     ) -> Result<CursorPage<Message>, MessageServiceError> {
-        let cache_limit = self.cache.latest_messages_cache_limit;
+        let cache_limit = self.config.cache.latest_messages.limit;
         // For small limits and first page, try the cache first
         if limit <= cache_limit && cursor.is_none() {
             debug!("checking cache for latest messages");

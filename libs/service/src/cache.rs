@@ -56,13 +56,6 @@ pub struct ChatCache {
     /// Per-user rate-limit counters. Each entry holds an atomic request count
     /// that expires after the configured rate-limit window.
     pub rate_limits: Cache<Uuid, Arc<AtomicU32>>,
-
-    /// Maximum number of messages that can be served from the latest-messages cache.
-    /// Requests for more than this bypass the cache and hit the database directly.
-    pub latest_messages_cache_limit: u64,
-
-    /// Maximum number of write operations a single user can perform per rate-limit window.
-    pub rate_limit_max_requests: u32,
 }
 
 impl ChatCache {
@@ -108,8 +101,6 @@ impl ChatCache {
                 .max_capacity(config.rate_limit.capacity)
                 .time_to_live(Duration::from_secs(config.rate_limit.window_secs))
                 .build(),
-            latest_messages_cache_limit: config.latest_messages.limit,
-            rate_limit_max_requests: config.rate_limit.max_requests,
         }
     }
 
@@ -141,15 +132,15 @@ impl ChatCache {
     /// Check whether a user has exceeded the per-window rate limit.
     ///
     /// Returns `Ok(())` if the request is allowed, or `Err(())` if the user
-    /// has hit the maximum number of requests for the current window.
-    pub async fn check_rate_limit(&self, user_id: Uuid) -> Result<(), ()> {
+    /// has hit `max_requests` within the current window.
+    pub async fn check_rate_limit(&self, user_id: Uuid, max_requests: u32) -> Result<(), ()> {
         let counter = self
             .rate_limits
             .get_with(user_id, async { Arc::new(AtomicU32::new(0)) })
             .await;
         // Atomically increment the counter, returns the previous value and check if it exceeds the limit.
         let prev = counter.fetch_add(1, Ordering::Relaxed);
-        if prev >= self.rate_limit_max_requests {
+        if prev >= max_requests {
             Err(())
         } else {
             Ok(())
